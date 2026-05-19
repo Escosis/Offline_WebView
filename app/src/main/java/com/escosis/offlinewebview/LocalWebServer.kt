@@ -9,10 +9,15 @@ import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 
+interface DebugLogger {
+    fun log(message: String)
+}
+
 class LocalWebServer(
     private val port: Int,
     private val rootUri: Uri,
-    private val context: Context
+    private val context: Context,
+    private val debugLogger: DebugLogger? = null   // 可为空，方便无调试时使用
 ) : NanoHTTPD(port) {
 
     private val contentResolver: ContentResolver = context.contentResolver
@@ -33,23 +38,39 @@ class LocalWebServer(
     // 最大缓存文件大小（字节）
     private val MAX_CACHE_SIZE = 200 * 1024  // 200KB
 
+    private fun log(message: String) {
+        debugLogger?.log("[Server] $message")
+        println("[LocalWebServer] $message")
+    }
+
     override fun serve(session: IHTTPSession): Response {
         var uri = session.uri
         if (uri == "/") uri = "/index.html"
         val relativePath = uri.removePrefix("/")
-        println("LocalWebServer: 请求相对路径 = $relativePath")
+        log("请求: $relativePath")
 
         // 1. 获取 DocumentFile（从缓存或查找）
         val targetDoc = docCache[relativePath] ?: findDocumentByPath(rootUri, relativePath)?.also {
             docCache[relativePath] = it
-            println("LocalWebServer: 缓存路径 $relativePath")
+            log("缓存文件查找结果: $relativePath -> ${it.uri}")
         }
 
+        // 文件不存在
         if (targetDoc == null || !targetDoc.exists()) {
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found: $relativePath")
+            log("文件不存在: $relativePath")
+            val errorUrl = "error://404?path=$relativePath"
+            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
+            response.addHeader("Location", errorUrl)
+            return response
         }
+
+        // 目录访问（禁止列出目录）
         if (targetDoc.isDirectory) {
-            return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "403 Forbidden: cannot list directory")
+            log("禁止访问目录: $relativePath")
+            val errorUrl = "error://403?path=$relativePath"
+            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
+            response.addHeader("Location", errorUrl)
+            return response
         }
 
         val mimeType = guessMimeType(relativePath)
@@ -59,7 +80,7 @@ class LocalWebServer(
             // 尝试从 HTML 缓存获取
             val cachedHtml = htmlCache[relativePath]
             if (cachedHtml != null) {
-                println("LocalWebServer: HTML 缓存命中 $relativePath")
+                log("HTML 缓存命中: $relativePath")
                 return newFixedLengthResponse(Response.Status.OK, mimeType, cachedHtml)
             }
 
@@ -67,13 +88,19 @@ class LocalWebServer(
             return try {
                 val inputStream = contentResolver.openInputStream(targetDoc.uri) ?: throw Exception("无法打开文件流")
                 val htmlContent = inputStream.bufferedReader().use { it.readText() }
+                log("读取 HTML 文件: $relativePath (${htmlContent.length} 字符)")
                 val injectedHtml = injectSelectPolyfill(htmlContent)
                 if (htmlContent.length < 512 * 1024) {
                     htmlCache[relativePath] = injectedHtml
+                    log("HTML 已缓存: $relativePath")
                 }
                 newFixedLengthResponse(Response.Status.OK, mimeType, injectedHtml)
             } catch (e: Exception) {
-                newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "500 Error: ${e.message}")
+                log("处理 HTML 出错: $relativePath - ${e.message}")
+                val errorUrl = "error://500?path=$relativePath"
+                val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
+                response.addHeader("Location", errorUrl)
+                response
             }
         }
 
@@ -81,8 +108,7 @@ class LocalWebServer(
         // 尝试从内容缓存获取
         val cachedContent = synchronized(contentCache) { contentCache[relativePath] }
         if (cachedContent != null) {
-            println("LocalWebServer: 内容缓存命中 $relativePath (${cachedContent.size} bytes)")
-            // 修正：将字节数组转为 InputStream 并指定长度
+            log("内容缓存命中: $relativePath (${cachedContent.size} bytes)")
             return newFixedLengthResponse(
                 Response.Status.OK,
                 mimeType,
@@ -96,15 +122,14 @@ class LocalWebServer(
             val inputStream = contentResolver.openInputStream(targetDoc.uri) ?: throw Exception("无法打开文件流")
             val fileSize = inputStream.available().toLong()
             if (fileSize <= 0 || fileSize > MAX_CACHE_SIZE) {
-                println("LocalWebServer: 流式传输 (大小>${MAX_CACHE_SIZE}或未知) $relativePath")
+                log("流式传输 (大小 > ${MAX_CACHE_SIZE} 或未知): $relativePath ($fileSize bytes)")
                 newChunkedResponse(Response.Status.OK, mimeType, inputStream)
             } else {
                 val bytes = inputStream.readBytes()
                 synchronized(contentCache) {
                     contentCache[relativePath] = bytes
                 }
-                println("LocalWebServer: 已缓存文件 $relativePath (${bytes.size} bytes)")
-                // 同样使用 InputStream 方式返回
+                log("已缓存文件: $relativePath (${bytes.size} bytes)")
                 newFixedLengthResponse(
                     Response.Status.OK,
                     mimeType,
@@ -113,14 +138,26 @@ class LocalWebServer(
                 )
             }
         } catch (e: Exception) {
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "500 Error: ${e.message}")
+            log("读取文件出错: $relativePath - ${e.message}")
+            val errorUrl = "error://500?path=$relativePath"
+            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
+            response.addHeader("Location", errorUrl)
+            response
         }
     }
 
     /**
-     * 在 </body> 前注入自定义 select 模拟脚本
+     * 在 </body> 前注入自定义 select 模拟脚本 + 透明背景样式
      */
     private fun injectSelectPolyfill(html: String): String {
+        val globalStyle = """
+        <style>
+            html, body {
+                background-color: transparent !important;
+            }
+        </style>
+    """.trimIndent()
+
         val polyfillScript = """
         <script>
         (function() {
@@ -209,7 +246,7 @@ class LocalWebServer(
                     valueDiv.style.color = computed.color;
                     valueDiv.style.backgroundColor = computed.backgroundColor;
 
-                    // ★ 关键修复：继承原生 select 的左右内边距
+                    // 关键修复：继承原生 select 的左右内边距
                     var padLeft = parseFloat(computed.paddingLeft) || 0;
                     var padRight = parseFloat(computed.paddingRight) || 0;
                     valueDiv.style.paddingLeft = padLeft + 'px';
@@ -286,10 +323,12 @@ class LocalWebServer(
         </script>
     """.trimIndent()
 
+        val fullInjection = "$globalStyle$polyfillScript"
+
         return if (html.contains("</body>", ignoreCase = true)) {
-            html.replace("</body>", "$polyfillScript</body>", ignoreCase = true)
+            html.replace("</body>", "$fullInjection</body>", ignoreCase = true)
         } else {
-            "$html$polyfillScript"
+            "$html$fullInjection"
         }
     }
 
@@ -329,6 +368,6 @@ class LocalWebServer(
         docCache.clear()
         contentCache.clear()
         htmlCache.clear()
-        println("LocalWebServer: 已停止并清空所有缓存")
+        log("服务器已停止，已清空所有缓存")
     }
 }

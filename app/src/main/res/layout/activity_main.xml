@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootFrame"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:id="@+id/rootFrame">
+    android:layout_height="match_parent">
 
-    <!-- 主内容区：垂直布局 -->
+    <!-- 主内容区：垂直布局，包含地址栏、内容区、工具栏 -->
     <LinearLayout
         android:id="@+id/mainContent"
         android:layout_width="match_parent"
@@ -13,119 +13,228 @@
         android:orientation="vertical"
         android:fitsSystemWindows="true">
 
-    <!-- 顶部地址栏 -->
-    <LinearLayout
-        android:id="@+id/urlBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingStart="2dp"
-        android:paddingEnd="2dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp"
-        android:background="#F5F5F5">
-
-        <EditText
-            android:id="@+id/urlEditText"
-            android:layout_width="0dp"
+        <!-- 顶部地址栏 -->
+        <LinearLayout
+            android:id="@+id/urlBar"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:hint="请输入网页地址"
-            android:inputType="textUri"
-            android:imeOptions="actionGo"
-            android:singleLine="true"
-            android:padding="6dp"
-            android:textSize="12sp"
-            android:background="@android:drawable/editbox_background_normal" />
+            android:orientation="horizontal"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:background="#F5F5F5">
 
-        <ImageButton
-            android:id="@+id/goButton"
-            android:layout_width="wrap_content"
+            <EditText
+                android:id="@+id/urlEditText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="请输入网页地址"
+                android:inputType="textUri"
+                android:imeOptions="actionGo"
+                android:singleLine="true"
+                android:padding="6dp"
+                android:textSize="12sp"
+                android:background="@android:drawable/editbox_background_normal" />
+
+            <ImageButton
+                android:id="@+id/goButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:src="@drawable/baseline_arrow_forward_ios_24"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:padding="4dp"
+                android:contentDescription="前往" />
+        </LinearLayout>
+
+        <!-- 内容容器：FrameLayout 用于叠加 GeckoView 和占位视图 -->
+        <FrameLayout
+            android:id="@+id/contentContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <!-- GeckoView 浏览器视图 -->
+            <org.mozilla.geckoview.GeckoView
+                android:id="@+id/geckoview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- 占位视图：覆盖在 GeckoView 上方，初始可见 -->
+            <FrameLayout
+                android:id="@+id/placeholderView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#F5F5F5"
+                android:visibility="visible">
+
+                <TextView
+                    android:id="@+id/placeholderText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="请先选择服务器根目录"
+                    android:textColor="#666666"
+                    android:textSize="16sp" />
+
+            </FrameLayout>
+
+            <!-- 加载失败视图，覆盖在 GeckoView 上方 -->
+            <FrameLayout
+                android:id="@+id/errorView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#F5F5F5"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/errorTextView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="加载失败，请刷新或重新选择文件"
+                    android:textColor="#666666"
+                    android:textSize="16sp" />
+
+            </FrameLayout>
+
+            <!-- 调试面板 -->
+            <LinearLayout
+                android:id="@+id/debugPanel"
+                android:layout_width="match_parent"
+                android:layout_height="300dp"
+                android:layout_gravity="bottom"
+                android:orientation="vertical"
+                android:background="#AA333333"
+                android:visibility="gone"
+                android:elevation="10dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:background="#AA333333"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="调试信息"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <ImageButton
+                        android:id="@+id/clearDebugLogButton"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/baseline_delete_sweep_24"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="清空日志"
+                        android:tint="#FFFFFF" />
+
+                    <ImageButton
+                        android:id="@+id/closeDebugPanelButton"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/baseline_close_24"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:layout_marginStart="8dp"
+                        android:contentDescription="关闭"
+                        android:tint="#FFFFFF" />
+                </LinearLayout>
+
+                <ScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:id="@+id/debugLogTextView"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#CCFFCC"
+                        android:textSize="12sp"
+                        android:fontFamily="monospace" />
+
+                </ScrollView>
+            </LinearLayout>
+
+        </FrameLayout>
+
+        <!-- 底部工具栏 -->
+        <LinearLayout
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:src="@drawable/baseline_arrow_forward_ios_24"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:padding="4dp"
-            android:contentDescription="前往" />
-    </LinearLayout>
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="#FFFFFF"
+            android:padding="8dp"
+            android:layout_marginBottom="0dp">
 
-    <!-- GeckoView -->
-    <org.mozilla.geckoview.GeckoView
-        android:id="@+id/geckoview"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+            <ImageButton
+                android:id="@+id/backButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_arrow_back_24"
+                android:scaleType="center"
+                android:contentDescription="返回" />
 
-    <!-- 底部工具栏 -->
-    <LinearLayout
-        android:id="@+id/toolbar"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:background="#FFFFFF"
-        android:padding="4dp"
-        android:layout_marginBottom="0dp">
+            <ImageButton
+                android:id="@+id/forwardButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_arrow_forward_24"
+                android:scaleType="center"
+                android:contentDescription="前进" />
 
-        <ImageButton
-            android:id="@+id/backButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_arrow_back_24"
-            android:scaleType="center"
-            android:contentDescription="返回" />
+            <ImageButton
+                android:id="@+id/refreshButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_refresh_24"
+                android:scaleType="center"
+                android:contentDescription="刷新" />
 
-        <ImageButton
-            android:id="@+id/forwardButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_arrow_forward_24"
-            android:scaleType="center"
-            android:contentDescription="前进" />
+            <ImageButton
+                android:id="@+id/selectDirButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_folder_open_24"
+                android:scaleType="center"
+                android:contentDescription="选择目录" />
 
-        <ImageButton
-            android:id="@+id/refreshButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_refresh_24"
-            android:scaleType="center"
-            android:contentDescription="刷新" />
+            <ImageButton
+                android:id="@+id/selectFileButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_insert_drive_file_24"
+                android:scaleType="center"
+                android:contentDescription="选择文件" />
 
-        <ImageButton
-            android:id="@+id/selectDirButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_folder_open_24"
-            android:scaleType="center"
-            android:contentDescription="选择目录" />
-
-        <ImageButton
-            android:id="@+id/selectFileButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_insert_drive_file_24"
-            android:scaleType="center"
-            android:contentDescription="选择文件" />
-
-        <ImageButton
-            android:id="@+id/nightModeButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/baseline_dark_mode_24"
-            android:scaleType="center"
-            android:contentDescription="夜间模式" />
-    </LinearLayout>
+            <ImageButton
+                android:id="@+id/menuButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/baseline_menu_24"
+                android:scaleType="center"
+                android:contentDescription="更多选项" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 悬浮球 -->
