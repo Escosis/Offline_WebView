@@ -466,7 +466,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         // 自动旋转
         val rotateItem = createOptionItem(
-            R.drawable.baseline_screen_rotation_24, "自动旋转",
+            R.drawable.mobile_rotate_24, "自动旋转",
             isEnabled = isOrientationAllowed,
             isToggle = true
         ) {
