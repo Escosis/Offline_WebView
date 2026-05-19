@@ -314,6 +314,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     }
 
     private fun showOverflowMenu() {
+        if (isAnimating || !isBarVisible || urlBar.height == 0 || toolbar.height == 0) {
+            return
+        }
+
         dismissOverflowMenu()
 
         val popupView = LinearLayout(this).apply {
@@ -962,6 +966,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private fun hideBars() {
         // 工具栏隐藏时关闭次级菜单
         dismissOverflowMenu()
+        menuButton.isEnabled = false
 
         if (isGuideActive) return
         if (!isAutoHideEnabled) return
@@ -989,6 +994,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             animatorSet.addListener(object : Animator.AnimatorListener {
                 override fun onAnimationStart(animation: Animator) {}
                 override fun onAnimationEnd(animation: Animator) {
+                    menuButton.isEnabled = true
                     isBarVisible = false
                     isAnimating = false
                     floatingBall.visibility = View.VISIBLE

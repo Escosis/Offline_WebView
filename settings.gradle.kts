@@ -25,5 +25,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Offline Webview"
+rootProject.name = "Offline WebView"
 include(":app")
