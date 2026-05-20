@@ -4,6 +4,7 @@ import android.animation.Animator
 import android.animation.AnimatorSet
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -33,6 +34,7 @@ import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import com.getkeepsafe.taptargetview.TapTarget
@@ -42,7 +44,8 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
-import androidx.appcompat.app.AlertDialog
+import java.io.File
+import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity(), DebugLogger {
 
@@ -53,6 +56,11 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var localWebServer: LocalWebServer? = null
     private var rootUri: Uri? = null
     private var isServerStarted = false
+
+    // 新增：Zip 解压模式
+    private var isZipMode = false               // 当前是否为 zip 解压模式
+    private lateinit var unzippedDir: File      // 私有解压目录
+    private var currentServerRoot: Any? = null  // Uri 或 File
 
     // 导航状态
     private var canGoBack = false
@@ -153,7 +161,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
-    // 文件夹选择器
+    // 文件夹选择器（原有）
     private val selectFolderLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -179,7 +187,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
-    // 文件选择器
+    // 文件选择器（原有，用于文件夹模式）
     private val selectFileLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -202,6 +210,19 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
         } else {
             log("选择文件取消或失败")
+        }
+    }
+
+    // 新增：ZIP 包选择器
+    private val zipPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val zipUri = result.data?.data ?: return@registerForActivityResult
+            log("已选择 ZIP: $zipUri")
+            extractZipInBackground(zipUri)
+        } else {
+            log("取消选择 ZIP")
         }
     }
 
@@ -238,6 +259,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             lockCurrentOrientation()
         }
 
+        initZipMode()  // 初始化解压目录
         initViews()
         setupGeckoView()
         setupListeners()
@@ -281,6 +303,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
+    private fun initZipMode() {
+        unzippedDir = File(filesDir, "unzipped_www")
+        if (!unzippedDir.exists()) {
+            unzippedDir.mkdirs()
+        }
+    }
+
     private fun setupDebugPanel() {
         debugPanel = findViewById(R.id.debugPanel)
         debugLogTextView = findViewById(R.id.debugLogTextView)
@@ -307,7 +336,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
-    // 关闭次级菜单
     private fun dismissOverflowMenu() {
         overflowPopup?.dismiss()
         overflowPopup = null
@@ -338,7 +366,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             return if (enabled) Color.rgb(0, 75, 171) else if (isNightMode) Color.WHITE else Color.DKGRAY
         }
 
-        // 通用创建带文本的垂直选项
         fun createOptionItem(iconRes: Int, text: String, isEnabled: Boolean = false, isToggle: Boolean = false, onToggle: (() -> Unit)? = null): View {
             val itemLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -359,15 +386,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             val textView = TextView(this).apply {
                 this.text = text
                 textSize = 12f
-                // 根据选项的开启状态决定初始文字颜色
                 val initialEnabled = when (text) {
-                    "夜间模式" -> isNightMode
+                    "夜间模式" -> this@MainActivity.isNightMode
                     "自动隐藏" -> isAutoHideEnabled
                     "允许旋转" -> isOrientationAllowed
                     else -> false
                 }
                 val textColor = if (initialEnabled) {
-                    Color.rgb(0, 75, 171) // 钴蓝色
+                    Color.rgb(0, 75, 171)
                 } else {
                     if (isNightMode) Color.WHITE else Color.DKGRAY
                 }
@@ -385,13 +411,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 itemLayout.setOnClickListener {
                     onToggle?.invoke()
                     val newEnabled = when (text) {
-                        "夜间模式" -> isNightMode
+                        "夜间模式" -> this@MainActivity.isNightMode
                         "自动隐藏" -> isAutoHideEnabled
                         "允许旋转" -> isOrientationAllowed
                         else -> false
                     }
                     imageView.setColorFilter(getIconColor(newEnabled))
-                    // 更新文字颜色
                     val newTextColor = if (newEnabled) {
                         Color.rgb(0, 75, 171)
                     } else {
@@ -413,7 +438,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isNightMode = !isNightMode
             applyNightMode()
             prefs.edit().putBoolean("night_mode", isNightMode).apply()
-            // 同步菜单背景色及所有选项的文字/图标颜色
             currentPopupView?.setBackgroundColor(if (isNightMode) Color.BLACK else Color.WHITE)
             for (i in 0 until (currentPopupView?.childCount ?: 0)) {
                 val child = currentPopupView?.getChildAt(i) as? LinearLayout
@@ -425,7 +449,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     "rotate" -> img?.setColorFilter(getIconColor(isOrientationAllowed))
                     else -> img?.setColorFilter(if (isNightMode) Color.WHITE else Color.DKGRAY)
                 }
-                // 根据每个选项的 tag 和当前状态分别设置文字颜色
                 val textColor = when (child?.getChildAt(0)?.tag) {
                     "night" -> if (isNightMode) Color.rgb(0, 75, 171) else if (isNightMode) Color.WHITE else Color.DKGRAY
                     "auto_hide" -> if (isAutoHideEnabled) Color.rgb(0, 75, 171) else if (isNightMode) Color.WHITE else Color.DKGRAY
@@ -436,7 +459,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
             log("夜间模式: ${if (isNightMode) "开启" else "关闭"}")
         }
-        // 为夜间模式的 ImageView 添加 tag 以便后续识别
         (nightItem as? LinearLayout)?.getChildAt(0)?.tag = "night"
         popupView.addView(nightItem)
 
@@ -498,10 +520,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         popupView.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
         val location = IntArray(2)
-        toolbar.getLocationOnScreen(location)      // 获取工具栏左上角屏幕坐标
-        val toolbarTop = location[1]               // 工具栏顶部距离屏幕顶部的像素
-        val menuHeight = popupView.measuredHeight  // 菜单总高度（已测量）
-        val menuTop = toolbarTop - menuHeight // 菜单顶部坐标
+        toolbar.getLocationOnScreen(location)
+        val toolbarTop = location[1]
+        val menuHeight = popupView.measuredHeight
+        val menuTop = toolbarTop - menuHeight
         popup.showAtLocation(toolbar, Gravity.NO_GRAVITY, 0, menuTop)
         overflowPopup = popup
     }
@@ -510,7 +532,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 横竖屏切换时关闭次级菜单
         dismissOverflowMenu()
 
         if (isGuideActive) {
@@ -537,7 +558,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE && !isGuideActive) {
             setStatusBarColor(Color.TRANSPARENT)
         } else {
-            // 恢复为夜间模式或日间模式对应的状态栏颜色
             if (isNightMode) {
                 setStatusBarColor(Color.parseColor("#333333"))
             } else {
@@ -688,26 +708,51 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
             resetHideTimer()
         }
+
+        // 原有短按：选择文件夹模式
         selectDirButton.setOnClickListener {
-            if (isServerStarted && rootUri != null) {
+            if (isServerStarted && rootUri != null && !isZipMode) {
                 showStopServerDialog()
+            } else if (isZipMode && isServerStarted) {
+                // zip 模式下短按，询问是否切换回文件夹模式
+                AlertDialog.Builder(this)
+                    .setTitle("切换数据源")
+                    .setMessage("当前为 ZIP 解压模式，是否停止并切换回文件夹选择模式？")
+                    .setPositiveButton("切换") { _, _ ->
+                        stopServerAndReset()
+                        // 清空 zip 相关状态
+                        isZipMode = false
+                        currentServerRoot = null
+                        // 恢复文件夹图标
+                        selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
+                        // 重新变为未选择文件夹状态
+                        updateUIAfterDirSelected()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
             } else {
                 log("打开文件夹选择器")
                 openFolderPicker()
             }
             resetHideTimer()
         }
-        selectFileButton.setOnClickListener {
-            if (rootUri != null && isServerStarted) {
-                log("打开文件选择器 (根目录: $rootUri)")
-                openFilePickerInRoot()
+
+        // 长按：选择 ZIP 包
+        selectDirButton.setOnLongClickListener {
+            if (isServerStarted) {
+                AlertDialog.Builder(this)
+                    .setTitle("切换数据源")
+                    .setMessage("当前服务器正在运行，是否停止并重新选择 ZIP 包？")
+                    .setPositiveButton("继续") { _, _ -> chooseZipAndExtract() }
+                    .setNegativeButton("取消", null)
+                    .show()
             } else {
-                log("文件选择失败: 未选择目录或服务器未启动")
-                Toast.makeText(this, "请先选择目录", Toast.LENGTH_SHORT).show()
+                chooseZipAndExtract()
             }
-            resetHideTimer()
+            true
         }
 
+        // 文件选择按钮的行为在 updateUIAfterDirSelected 中动态设置
         urlEditText.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 hideHandler.removeCallbacks(hideRunnable)
@@ -755,15 +800,108 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         selectFileLauncher.launch(intent)
     }
 
-    private fun startServer() {
+    // 新增：选择 ZIP 包
+    private fun chooseZipAndExtract() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+        }
+        zipPickerLauncher.launch(intent)
+    }
+
+    // 后台解压 ZIP
+    private fun extractZipInBackground(zipUri: Uri) {
+        val progressDialog = ProgressDialog(this).apply {
+            setMessage("正在解压，请稍候...")
+            setCancelable(false)
+            show()
+        }
+        Thread {
+            try {
+                // 清空旧目录
+                if (unzippedDir.exists()) {
+                    unzippedDir.deleteRecursively()
+                }
+                unzippedDir.mkdirs()
+
+                contentResolver.openInputStream(zipUri)?.use { inputStream ->
+                    ZipInputStream(inputStream).use { zipStream ->
+                        var entry = zipStream.nextEntry
+                        while (entry != null) {
+                            val targetFile = File(unzippedDir, entry.name)
+                            if (entry.isDirectory) {
+                                targetFile.mkdirs()
+                            } else {
+                                targetFile.parentFile?.mkdirs()
+                                targetFile.outputStream().use { out ->
+                                    zipStream.copyTo(out)
+                                }
+                            }
+                            zipStream.closeEntry()
+                            entry = zipStream.nextEntry
+                        }
+                    }
+                }
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    // 解压成功，启动新服务器
+                    stopServerAndReset()
+                    startServerFromFile(unzippedDir)
+                }
+            } catch (e: Exception) {
+                log("解压失败: ${e.message}")
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    Toast.makeText(this, "解压失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    unzippedDir.deleteRecursively()
+                }
+            }
+        }.start()
+    }
+
+    // 从 File 根目录启动服务器（zip 模式）
+    private fun startServerFromFile(rootFile: File) {
+        if (!rootFile.exists()) {
+            log("根目录不存在: ${rootFile.absolutePath}")
+            return
+        }
         localWebServer?.stop()
-        if (rootUri == null) return
-        log("启动本地服务器，根目录: $rootUri")
-        val server = LocalWebServer(8080, rootUri!!, this, this)
+        localWebServer = LocalWebServer(8080, rootFile = rootFile, context = this, debugLogger = this)
         try {
-            server.start()
-            localWebServer = server
+            localWebServer?.start()
             isServerStarted = true
+            isZipMode = true
+            currentServerRoot = rootFile
+            // 切换图标为 ZIP 文件夹图标
+            selectDirButton.setImageResource(R.drawable.baseline_folder_zip_24)
+            geckoSession.purgeHistory()
+            log("服务器已启动，根目录: ${rootFile.absolutePath}")
+            runOnUiThread {
+                updateUIAfterDirSelected()
+                loadUrl("http://localhost:8080/")
+                Toast.makeText(this, "服务器已启动 (ZIP解压模式)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            log("服务器启动失败: ${e.message}")
+            isServerStarted = false
+            runOnUiThread {
+                Toast.makeText(this, "服务器启动失败: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // 原有基于 Uri 的服务器启动（文件夹模式）
+    private fun startServer() {
+        if (rootUri == null) return
+        localWebServer?.stop()
+        localWebServer = LocalWebServer(8080, rootUri = rootUri, context = this, debugLogger = this)
+        try {
+            localWebServer?.start()
+            isServerStarted = true
+            isZipMode = false
+            currentServerRoot = rootUri
+            // 确保图标为普通文件夹图标
+            selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
             geckoSession.purgeHistory()
             log("服务器启动成功，端口 8080")
         } catch (e: Exception) {
@@ -774,7 +912,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     }
 
     private fun updateUIAfterDirSelected() {
-        val enabled = rootUri != null && isServerStarted
+        val enabled = isServerStarted
         selectFileButton.isEnabled = enabled
         selectFileButton.alpha = if (enabled) 1.0f else 0.4f
         urlEditText.isEnabled = enabled
@@ -783,13 +921,46 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             urlEditText.hint = ""
             placeholderView.visibility = View.GONE
             hideErrorView()
+            // 根据模式设置文件选择按钮的行为
+            if (isZipMode) {
+                selectFileButton.setOnClickListener {
+                    showFilePickerForPrivateDir()
+                }
+            } else {
+                selectFileButton.setOnClickListener {
+                    openFilePickerInRoot()
+                }
+            }
         } else {
             urlEditText.setText("")
-            urlEditText.hint = "请先选择服务器根目录"
+            urlEditText.hint = if (isZipMode) "请先选择 ZIP 包" else "请先选择服务器根目录"
             urlEditText.isEnabled = false
             placeholderView.visibility = View.VISIBLE
         }
         applyNightMode()
+    }
+
+    // ZIP 模式下的简易文件选择对话框
+    private fun showFilePickerForPrivateDir() {
+        if (!isZipMode || currentServerRoot !is File) {
+            Toast.makeText(this, "当前不在 ZIP 模式", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val rootFile = currentServerRoot as File
+        val files = rootFile.listFiles()?.filter { it.isFile && (it.extension.equals("html", ignoreCase = true) || it.extension.equals("htm", ignoreCase = true)) } ?: emptyList()
+        if (files.isEmpty()) {
+            Toast.makeText(this, "根目录下没有 HTML 文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = files.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择要加载的 HTML 文件")
+            .setItems(items) { _, which ->
+                val selectedFile = files[which]
+                val relativePath = rootFile.toURI().relativize(selectedFile.toURI()).path
+                loadUrl("http://localhost:8080/$relativePath")
+            }
+            .show()
     }
 
     private fun loadUserInputUrl(input: String) {
@@ -799,7 +970,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             url = if (url.startsWith("/")) "http://localhost:8080$url"
             else "http://localhost:8080/$url"
         }
-        if (url.startsWith("http://localhost:8080/") && rootUri != null) {
+        if (url.startsWith("http://localhost:8080/") && (rootUri != null || (isZipMode && currentServerRoot != null))) {
             log("加载用户输入: $url")
             loadUrl(url)
         } else {
@@ -909,13 +1080,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         setIconColor(selectFileButton, if (selectFileButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(goButton, normalIconColor)
 
+        // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 模式还是普通模式）
         if (isServerStarted) {
             selectDirButton.setColorFilter(Color.rgb(0, 75, 171), PorterDuff.Mode.SRC_IN)
         } else {
             setIconColor(selectDirButton, normalIconColor)
         }
 
-        // 设置菜单按钮颜色（深色模式下白色，日间模式下深灰色）
         setIconColor(menuButton, normalIconColor)
 
         if (isNightMode) {
@@ -945,7 +1116,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     View.SYSTEM_UI_FLAG_FULLSCREEN
                             or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY   // 添加沉浸模式
+                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     )
         }
     }
@@ -953,7 +1124,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private fun showSystemBars() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.insetsController?.show(android.view.WindowInsets.Type.statusBars())
-            // 恢复默认行为（可选）
             window.insetsController?.setSystemBarsBehavior(
                 android.view.WindowInsetsController.BEHAVIOR_DEFAULT
             )
@@ -962,13 +1132,11 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             window.decorView.systemUiVisibility = (
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    // 移除 FULLSCREEN 和 IMMERSIVE_STICKY
                     )
         }
     }
 
     private fun hideBars() {
-        // 工具栏隐藏时关闭次级菜单
         dismissOverflowMenu()
         menuButton.isEnabled = false
 
@@ -1154,7 +1322,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         try {
             TapTargetSequence(this)
                 .targets(
-                    TapTarget.forView(selectDirButton, "选择服务器根目录", "点击此按钮，选择一个文件夹作为本地服务器的根目录。建议选择 Download 文件夹下的任意目录，不要选择非内部存储空间（如最近，下载等）的目录。")
+                    TapTarget.forView(selectDirButton, "选择服务器根目录", "点击此按钮，选择一个文件夹作为本地服务器的根目录。建议选择 Download 文件夹下的任意目录，不要选择非内部存储空间（如最近，下载等）的目录。\n\n长按此按钮可选择 ZIP 压缩包，解压后使用。")
                         .outerCircleColorInt(Color.parseColor("#444444"))
                         .targetCircleColorInt(Color.parseColor("#DDDDDD"))
                         .titleTextSize(18)
@@ -1289,6 +1457,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer = null
         isServerStarted = false
         rootUri = null
+        // 注意：不清空 isZipMode 和 currentServerRoot，由调用者决定是否清空
         geckoSession.loadUri("about:blank")
         geckoSession.purgeHistory()
         updateUIAfterDirSelected()
@@ -1296,7 +1465,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         canGoForward = false
         updateNavigationButtonsState()
         urlEditText.setText("")
-        urlEditText.hint = "请先选择服务器根目录"
+        urlEditText.hint = if (isZipMode) "请先选择 ZIP 包" else "请先选择服务器根目录"
         log("服务器已停止，界面已重置")
     }
 }

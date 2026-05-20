@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 
@@ -15,17 +16,19 @@ interface DebugLogger {
 
 class LocalWebServer(
     private val port: Int,
-    private val rootUri: Uri,
+    private val rootUri: Uri? = null,          // SAF 模式根目录
+    private val rootFile: File? = null,         // 文件模式根目录
     private val context: Context,
-    private val debugLogger: DebugLogger? = null   // 可为空，方便无调试时使用
+    private val debugLogger: DebugLogger? = null
 ) : NanoHTTPD(port) {
 
     private val contentResolver: ContentResolver = context.contentResolver
+    private val isUriMode = rootUri != null
 
-    // 路径 -> DocumentFile 缓存
+    // 缓存：Uri 模式下的 DocumentFile 对象
     private val docCache = ConcurrentHashMap<String, DocumentFile>()
 
-    // 内容缓存：路径 -> 字节数组（小文件）
+    // 内容缓存（小文件字节数组，LRU 策略）
     private val contentCache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
             return size > 200
@@ -49,50 +52,44 @@ class LocalWebServer(
         val relativePath = uri.removePrefix("/")
         log("请求: $relativePath")
 
-        // 1. 获取 DocumentFile（从缓存或查找）
-        val targetDoc = docCache[relativePath] ?: findDocumentByPath(rootUri, relativePath)?.also {
+        return if (isUriMode && rootUri != null) {
+            serveFromUri(relativePath)
+        } else if (rootFile != null && rootFile.exists()) {
+            serveFromFile(relativePath)
+        } else {
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Server not initialized")
+        }
+    }
+
+    // ==================== Uri 模式（原有逻辑，仅提取） ====================
+    private fun serveFromUri(relativePath: String): Response {
+        val targetDoc = docCache[relativePath] ?: findDocumentByPath(rootUri!!, relativePath)?.also {
             docCache[relativePath] = it
             log("缓存文件查找结果: $relativePath -> ${it.uri}")
         }
 
-        // 文件不存在
         if (targetDoc == null || !targetDoc.exists()) {
             log("文件不存在: $relativePath")
-            val errorUrl = "error://404?path=$relativePath"
-            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
-            response.addHeader("Location", errorUrl)
-            response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-            response.addHeader("Pragma", "no-cache")
-            response.addHeader("Expires", "0")
-            return response
+            return newErrorRedirect("error://404?path=$relativePath")
         }
 
-        // 目录访问（禁止列出目录）
         if (targetDoc.isDirectory) {
             log("禁止访问目录: $relativePath")
-            val errorUrl = "error://403?path=$relativePath"
-            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
-            response.addHeader("Location", errorUrl)
-            response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-            response.addHeader("Pragma", "no-cache")
-            response.addHeader("Expires", "0")
-            return response
+            return newErrorRedirect("error://403?path=$relativePath")
         }
 
         val mimeType = guessMimeType(relativePath)
 
-        // 2. 处理 HTML（特殊注入，且可缓存）
+        // HTML 特殊处理
         if (mimeType == "text/html") {
-            // 尝试从 HTML 缓存获取
             val cachedHtml = htmlCache[relativePath]
             if (cachedHtml != null) {
                 log("HTML 缓存命中: $relativePath")
                 return newFixedLengthResponse(Response.Status.OK, mimeType, cachedHtml)
             }
-
-            // 否则读取文件，注入脚本，并缓存
             return try {
-                val inputStream = contentResolver.openInputStream(targetDoc.uri) ?: throw Exception("无法打开文件流")
+                val inputStream = contentResolver.openInputStream(targetDoc.uri)
+                    ?: throw Exception("无法打开文件流")
                 val htmlContent = inputStream.bufferedReader().use { it.readText() }
                 log("读取 HTML 文件: $relativePath (${htmlContent.length} 字符)")
                 val injectedHtml = injectSelectPolyfill(htmlContent)
@@ -103,15 +100,11 @@ class LocalWebServer(
                 newFixedLengthResponse(Response.Status.OK, mimeType, injectedHtml)
             } catch (e: Exception) {
                 log("处理 HTML 出错: $relativePath - ${e.message}")
-                val errorUrl = "error://500?path=$relativePath"
-                val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
-                response.addHeader("Location", errorUrl)
-                response
+                newErrorRedirect("error://500?path=$relativePath")
             }
         }
 
-        // 3. 处理非 HTML 资源（图片、CSS、JS 等）
-        // 尝试从内容缓存获取
+        // 非 HTML 资源（图片、CSS、JS 等）
         val cachedContent = synchronized(contentCache) { contentCache[relativePath] }
         if (cachedContent != null) {
             log("内容缓存命中: $relativePath (${cachedContent.size} bytes)")
@@ -123,9 +116,9 @@ class LocalWebServer(
             )
         }
 
-        // 未命中缓存，读取文件并决定是否缓存
         return try {
-            val inputStream = contentResolver.openInputStream(targetDoc.uri) ?: throw Exception("无法打开文件流")
+            val inputStream = contentResolver.openInputStream(targetDoc.uri)
+                ?: throw Exception("无法打开文件流")
             val fileSize = inputStream.available().toLong()
             if (fileSize <= 0 || fileSize > MAX_CACHE_SIZE) {
                 log("流式传输 (大小 > ${MAX_CACHE_SIZE} 或未知): $relativePath ($fileSize bytes)")
@@ -145,16 +138,126 @@ class LocalWebServer(
             }
         } catch (e: Exception) {
             log("读取文件出错: $relativePath - ${e.message}")
-            val errorUrl = "error://500?path=$relativePath"
-            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
-            response.addHeader("Location", errorUrl)
-            response
+            newErrorRedirect("error://500?path=$relativePath")
         }
     }
 
-    /**
-     * 在 </body> 前注入自定义 select 模拟脚本 + 透明背景样式
-     */
+    // ==================== 文件模式（新增，基于 File API） ====================
+    private fun serveFromFile(relativePath: String): Response {
+        val targetFile = File(rootFile!!, relativePath)
+        if (!targetFile.exists()) {
+            log("文件不存在: $relativePath")
+            return newErrorRedirect("error://404?path=$relativePath")
+        }
+        if (targetFile.isDirectory) {
+            log("禁止访问目录: $relativePath")
+            return newErrorRedirect("error://403?path=$relativePath")
+        }
+
+        val mimeType = guessMimeType(relativePath)
+
+        // HTML 特殊处理
+        if (mimeType == "text/html") {
+            val cachedHtml = htmlCache[relativePath]
+            if (cachedHtml != null) {
+                log("HTML 缓存命中: $relativePath")
+                return newFixedLengthResponse(Response.Status.OK, mimeType, cachedHtml)
+            }
+            return try {
+                val htmlContent = targetFile.readText()
+                log("读取 HTML 文件: $relativePath (${htmlContent.length} 字符)")
+                val injectedHtml = injectSelectPolyfill(htmlContent)
+                if (htmlContent.length < 512 * 1024) {
+                    htmlCache[relativePath] = injectedHtml
+                    log("HTML 已缓存: $relativePath")
+                }
+                newFixedLengthResponse(Response.Status.OK, mimeType, injectedHtml)
+            } catch (e: Exception) {
+                log("处理 HTML 出错: $relativePath - ${e.message}")
+                newErrorRedirect("error://500?path=$relativePath")
+            }
+        }
+
+        // 非 HTML 资源
+        val cachedContent = synchronized(contentCache) { contentCache[relativePath] }
+        if (cachedContent != null) {
+            log("内容缓存命中: $relativePath (${cachedContent.size} bytes)")
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                mimeType,
+                ByteArrayInputStream(cachedContent),
+                cachedContent.size.toLong()
+            )
+        }
+
+        return try {
+            val fileSize = targetFile.length()
+            if (fileSize <= 0 || fileSize > MAX_CACHE_SIZE) {
+                log("流式传输 (大小 > ${MAX_CACHE_SIZE} 或未知): $relativePath ($fileSize bytes)")
+                newChunkedResponse(Response.Status.OK, mimeType, targetFile.inputStream())
+            } else {
+                val bytes = targetFile.readBytes()
+                synchronized(contentCache) {
+                    contentCache[relativePath] = bytes
+                }
+                log("已缓存文件: $relativePath (${bytes.size} bytes)")
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    mimeType,
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+            }
+        } catch (e: Exception) {
+            log("读取文件出错: $relativePath - ${e.message}")
+            newErrorRedirect("error://500?path=$relativePath")
+        }
+    }
+
+    // 辅助方法：生成错误重定向响应
+    private fun newErrorRedirect(location: String): Response {
+        val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "")
+        response.addHeader("Location", location)
+        response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        response.addHeader("Pragma", "no-cache")
+        response.addHeader("Expires", "0")
+        return response
+    }
+
+    // 原有的 findDocumentByPath 方法（不变）
+    private fun findDocumentByPath(rootUri: Uri, relativePath: String): DocumentFile? {
+        var currentDir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
+        val parts = relativePath.split("/").filter { it.isNotEmpty() }
+        for (part in parts) {
+            val next = currentDir.findFile(part)
+            if (next == null || !next.exists()) return null
+            if (next.isDirectory) {
+                currentDir = next
+            } else {
+                if (parts.last() == part) return next
+                else return null
+            }
+        }
+        return currentDir
+    }
+
+    // 原有的 MIME 类型猜测（不变）
+    private fun guessMimeType(fileName: String): String {
+        return when {
+            fileName.endsWith(".html") || fileName.endsWith(".htm") -> "text/html"
+            fileName.endsWith(".css") -> "text/css"
+            fileName.endsWith(".js") -> "application/javascript"
+            fileName.endsWith(".png") -> "image/png"
+            fileName.endsWith(".jpg") || fileName.endsWith(".jpeg") -> "image/jpeg"
+            fileName.endsWith(".gif") -> "image/gif"
+            fileName.endsWith(".webp") -> "image/webp"
+            fileName.endsWith(".svg") -> "image/svg+xml"
+            fileName.endsWith(".json") -> "application/json"
+            else -> "text/plain"
+        }
+    }
+
+    // 原有的 HTML 注入脚本（不变）
     private fun injectSelectPolyfill(html: String): String {
         val globalStyle = """
         <style>
@@ -242,7 +345,7 @@ class LocalWebServer(
                     container.style.backgroundColor = computed.backgroundColor;
                     container.style.borderRadius = computed.borderRadius;
 
-                    // 显示值区域 —— 完整继承文字及内边距
+                    // 显示值区域
                     var valueDiv = document.createElement('div');
                     valueDiv.className = 'custom-select-value';
                     valueDiv.style.fontFamily = computed.fontFamily;
@@ -252,23 +355,19 @@ class LocalWebServer(
                     valueDiv.style.color = computed.color;
                     valueDiv.style.backgroundColor = computed.backgroundColor;
 
-                    // 关键修复：继承原生 select 的左右内边距
                     var padLeft = parseFloat(computed.paddingLeft) || 0;
                     var padRight = parseFloat(computed.paddingRight) || 0;
                     valueDiv.style.paddingLeft = padLeft + 'px';
-                    // 右侧需为箭头预留空间（箭头宽度 20px）
                     valueDiv.style.paddingRight = (padRight + 20) + 'px';
 
                     valueDiv.textContent = select.options[select.selectedIndex]?.text || '请选择';
 
-                    // 箭头 —— 动态字体大小
                     var arrow = document.createElement('div');
                     arrow.className = 'custom-select-arrow';
                     arrow.textContent = '▼';
                     var fontSizePx = parseFloat(computed.fontSize);
                     arrow.style.fontSize = (fontSizePx * 0.8) + 'px';
 
-                    // 下拉选项
                     var optionsDiv = document.createElement('div');
                     optionsDiv.className = 'custom-select-options';
                     var optionStyle = select.options.length > 0 ? getComputedStyle(select.options[0]) : null;
@@ -335,37 +434,6 @@ class LocalWebServer(
             html.replace("</body>", "$fullInjection</body>", ignoreCase = true)
         } else {
             "$html$fullInjection"
-        }
-    }
-
-    private fun findDocumentByPath(rootUri: Uri, relativePath: String): DocumentFile? {
-        var currentDir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
-        val parts = relativePath.split("/").filter { it.isNotEmpty() }
-        for (part in parts) {
-            val next = currentDir.findFile(part)
-            if (next == null || !next.exists()) return null
-            if (next.isDirectory) {
-                currentDir = next
-            } else {
-                if (parts.last() == part) return next
-                else return null
-            }
-        }
-        return currentDir
-    }
-
-    private fun guessMimeType(fileName: String): String {
-        return when {
-            fileName.endsWith(".html") || fileName.endsWith(".htm") -> "text/html"
-            fileName.endsWith(".css") -> "text/css"
-            fileName.endsWith(".js") -> "application/javascript"
-            fileName.endsWith(".png") -> "image/png"
-            fileName.endsWith(".jpg") || fileName.endsWith(".jpeg") -> "image/jpeg"
-            fileName.endsWith(".gif") -> "image/gif"
-            fileName.endsWith(".webp") -> "image/webp"
-            fileName.endsWith(".svg") -> "image/svg+xml"
-            fileName.endsWith(".json") -> "application/json"
-            else -> "text/plain"
         }
     }
 
