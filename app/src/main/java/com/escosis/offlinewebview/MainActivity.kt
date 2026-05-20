@@ -311,6 +311,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         overflowPopup?.dismiss()
         overflowPopup = null
         currentPopupView = null
+        resetHideTimer()
     }
 
     private fun showOverflowMenu() {
@@ -396,6 +397,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         if (isNightMode) Color.WHITE else Color.DKGRAY
                     }
                     textView.setTextColor(newTextColor)
+                    resetHideTimer()
                 }
             }
             return itemLayout
@@ -1257,5 +1259,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     private fun unlockOrientation() {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resetHideTimer()
     }
 }
