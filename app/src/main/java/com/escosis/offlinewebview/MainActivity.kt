@@ -132,11 +132,21 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         private const val KEY_AUTO_HIDE_ENABLED = "auto_hide_enabled"
         private const val ORIENTATION_PREFS = "orientation_prefs"
         private const val KEY_ORIENTATION_ALLOWED = "orientation_allowed"
+        private const val KEY_SELECT_MODE = "select_mode"
     }
 
     // 调试日志缓冲区
     private val logBuffer = mutableListOf<String>()
     private val maxLogLines = 500
+
+    // 选择模式枚举
+    enum class SelectMode {
+        FOLDER,  // 外部文件夹模式（默认）
+        ZIP      // ZIP 解压模式
+    }
+
+    private var currentSelectMode: SelectMode = SelectMode.FOLDER
+    private lateinit var selectModePrefs: SharedPreferences
 
     override fun log(message: String) {
         if (!isDebugEnabled) return
@@ -301,6 +311,11 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 }
             }
         }
+        selectModePrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedMode = selectModePrefs.getString(KEY_SELECT_MODE, SelectMode.FOLDER.name) ?: SelectMode.FOLDER.name
+        currentSelectMode = SelectMode.valueOf(savedMode)
+        updateSelectModeIcon()
+        updateUIForCurrentMode()  // 根据模式更新UI（提示文字等）
     }
 
     private fun initZipMode() {
@@ -709,45 +724,36 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             resetHideTimer()
         }
 
-        // 原有短按：选择文件夹模式
         selectDirButton.setOnClickListener {
-            if (isServerStarted && rootUri != null && !isZipMode) {
-                showStopServerDialog()
-            } else if (isZipMode && isServerStarted) {
-                // zip 模式下短按，询问是否切换回文件夹模式
+            if (isServerStarted) {
+                // 服务器运行中，询问是否停止
                 AlertDialog.Builder(this)
-                    .setTitle("切换数据源")
-                    .setMessage("当前为 ZIP 解压模式，是否停止并切换回文件夹选择模式？")
-                    .setPositiveButton("切换") { _, _ ->
+                    .setTitle("停止服务器")
+                    .setMessage("当前服务器正在运行，是否停止？")
+                    .setPositiveButton("停止") { _, _ ->
                         stopServerAndReset()
-                        // 清空 zip 相关状态
-                        isZipMode = false
-                        currentServerRoot = null
-                        // 恢复文件夹图标
-                        selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
-                        // 重新变为未选择文件夹状态
-                        updateUIAfterDirSelected()
                     }
                     .setNegativeButton("取消", null)
                     .show()
             } else {
-                log("打开文件夹选择器")
-                openFolderPicker()
+                // 根据当前模式执行相应操作
+                when (currentSelectMode) {
+                    SelectMode.FOLDER -> openFolderPicker()
+                    SelectMode.ZIP -> chooseZipAndExtract()
+                }
             }
             resetHideTimer()
         }
 
-        // 长按：选择 ZIP 包
         selectDirButton.setOnLongClickListener {
             if (isServerStarted) {
                 AlertDialog.Builder(this)
-                    .setTitle("切换数据源")
-                    .setMessage("当前服务器正在运行，是否停止并重新选择 ZIP 包？")
-                    .setPositiveButton("继续") { _, _ -> chooseZipAndExtract() }
-                    .setNegativeButton("取消", null)
+                    .setTitle("无法切换模式")
+                    .setMessage("服务器正在运行，无法切换模式。请先停止服务器。")
+                    .setPositiveButton("了解", null)
                     .show()
             } else {
-                chooseZipAndExtract()
+                switchSelectMode()
             }
             true
         }
@@ -805,6 +811,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/zip"
+            val downloadsUri = getDownloadsUri()
+            if (downloadsUri != null) {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, downloadsUri)
+            }
         }
         zipPickerLauncher.launch(intent)
     }
@@ -818,10 +828,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
         Thread {
             try {
-                // 清空旧目录
-                if (unzippedDir.exists()) {
-                    unzippedDir.deleteRecursively()
-                }
+                cleanupUnzippedDir()
                 unzippedDir.mkdirs()
 
                 contentResolver.openInputStream(zipUri)?.use { inputStream ->
@@ -845,7 +852,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 runOnUiThread {
                     progressDialog.dismiss()
                     // 解压成功，启动新服务器
-                    stopServerAndReset()
+                    PrivateDirDocumentsProvider.setRootDirectory(unzippedDir)
                     startServerFromFile(unzippedDir)
                 }
             } catch (e: Exception) {
@@ -859,7 +866,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }.start()
     }
 
-    // 从 File 根目录启动服务器（zip 模式）
+    // 从 File 根目录启动服务器（ZIP 解压模式）
     private fun startServerFromFile(rootFile: File) {
         if (!rootFile.exists()) {
             log("根目录不存在: ${rootFile.absolutePath}")
@@ -872,8 +879,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isServerStarted = true
             isZipMode = true
             currentServerRoot = rootFile
-            // 切换图标为 ZIP 文件夹图标
-            selectDirButton.setImageResource(R.drawable.baseline_folder_zip_24)
             geckoSession.purgeHistory()
             log("服务器已启动，根目录: ${rootFile.absolutePath}")
             runOnUiThread {
@@ -898,15 +903,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         try {
             localWebServer?.start()
             isServerStarted = true
-            isZipMode = false
+            isZipMode = false   // 文件夹模式
             currentServerRoot = rootUri
-            // 确保图标为普通文件夹图标
-            selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
             geckoSession.purgeHistory()
             log("服务器启动成功，端口 8080")
+            runOnUiThread {
+                updateUIAfterDirSelected()
+                loadUrl("http://localhost:8080/")
+                Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
+            }
         } catch (e: Exception) {
             log("服务器启动失败: ${e.message}")
-            Toast.makeText(this, "服务器启动失败: ${e.message}", Toast.LENGTH_LONG).show()
             isServerStarted = false
         }
     }
@@ -921,7 +928,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             urlEditText.hint = ""
             placeholderView.visibility = View.GONE
             hideErrorView()
-            // 根据模式设置文件选择按钮的行为
             if (isZipMode) {
                 selectFileButton.setOnClickListener {
                     showFilePickerForPrivateDir()
@@ -940,27 +946,26 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         applyNightMode()
     }
 
-    // ZIP 模式下的简易文件选择对话框
+    // ZIP 解压模式下文件选择
     private fun showFilePickerForPrivateDir() {
         if (!isZipMode || currentServerRoot !is File) {
-            Toast.makeText(this, "当前不在 ZIP 模式", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "当前不在 ZIP 解压模式", Toast.LENGTH_SHORT).show()
             return
         }
-        val rootFile = currentServerRoot as File
-        val files = rootFile.listFiles()?.filter { it.isFile && (it.extension.equals("html", ignoreCase = true) || it.extension.equals("htm", ignoreCase = true)) } ?: emptyList()
-        if (files.isEmpty()) {
-            Toast.makeText(this, "根目录下没有 HTML 文件", Toast.LENGTH_SHORT).show()
+        PrivateDirDocumentsProvider.setRootDirectory(unzippedDir)
+
+        val rootUri = PrivateDirDocumentsProvider.getRootDocumentUri(this)
+        if (rootUri == null) {
+            Toast.makeText(this, "无法获取私有目录", Toast.LENGTH_SHORT).show()
             return
         }
-        val items = files.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("选择要加载的 HTML 文件")
-            .setItems(items) { _, which ->
-                val selectedFile = files[which]
-                val relativePath = rootFile.toURI().relativize(selectedFile.toURI()).path
-                loadUrl("http://localhost:8080/$relativePath")
-            }
-            .show()
+
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/html"
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootUri)
+        }
+        htmlFilePickerLauncher.launch(intent)
     }
 
     private fun loadUserInputUrl(input: String) {
@@ -1030,6 +1035,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer?.stop()
         geckoSession.close()
         dismissOverflowMenu()
+        cleanupUnzippedDir()
     }
 
     private fun setStatusBarColor(color: Int) {
@@ -1080,7 +1086,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         setIconColor(selectFileButton, if (selectFileButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(goButton, normalIconColor)
 
-        // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 模式还是普通模式）
+        // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 解压模式还是普通模式）
         if (isServerStarted) {
             selectDirButton.setColorFilter(Color.rgb(0, 75, 171), PorterDuff.Mode.SRC_IN)
         } else {
@@ -1322,7 +1328,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         try {
             TapTargetSequence(this)
                 .targets(
-                    TapTarget.forView(selectDirButton, "选择服务器根目录", "点击此按钮，选择一个文件夹作为本地服务器的根目录。建议选择 Download 文件夹下的任意目录，不要选择非内部存储空间（如最近，下载等）的目录。\n\n长按此按钮可选择 ZIP 压缩包，解压后使用。")
+                    TapTarget.forView(selectDirButton, "选择服务器根目录", "长按此按钮可切换模式：\n文件夹模式（初始，读取文件速度慢，不兼容鸿蒙 NEXT 设备）：点击此按钮，选择一个文件夹作为本地服务器的根目录。建议选择 Download 文件夹下的任意目录。\nZIP 解压模式（推荐，速度很快但需占用存储）：点击此按钮，选择一个 ZIP 压缩包，将其解压至应用数据目录作为本地服务器的根目录。\n\n服务器运行中，点击此按钮可停止服务器。")
                         .outerCircleColorInt(Color.parseColor("#444444"))
                         .targetCircleColorInt(Color.parseColor("#DDDDDD"))
                         .titleTextSize(18)
@@ -1434,6 +1440,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     override fun onResume() {
         super.onResume()
         resetHideTimer()
+        if (!isServerStarted && currentSelectMode == SelectMode.ZIP) {
+            cleanupUnzippedDir()
+        }
     }
 
     private fun showStopServerDialog() {
@@ -1452,12 +1461,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             .show()
     }
 
-    private fun stopServerAndReset() {
+    private fun stopServerAndReset(onComplete: (() -> Unit)? = null) {
         localWebServer?.stop()
         localWebServer = null
         isServerStarted = false
+        isZipMode = false
+        currentServerRoot = null
         rootUri = null
-        // 注意：不清空 isZipMode 和 currentServerRoot，由调用者决定是否清空
         geckoSession.loadUri("about:blank")
         geckoSession.purgeHistory()
         updateUIAfterDirSelected()
@@ -1465,7 +1475,102 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         canGoForward = false
         updateNavigationButtonsState()
         urlEditText.setText("")
-        urlEditText.hint = if (isZipMode) "请先选择 ZIP 包" else "请先选择服务器根目录"
+        urlEditText.hint = when (currentSelectMode) {
+            SelectMode.FOLDER -> "请先选择服务器根目录"
+            SelectMode.ZIP -> "请先选择 ZIP 包"
+        }
         log("服务器已停止，界面已重置")
+
+        // 如果是 ZIP 解压模式，清理解压目录（但不影响模式状态）
+        if (currentSelectMode == SelectMode.ZIP) {
+            cleanupUnzippedDir()
+        }
+
+        onComplete?.invoke()
+    }
+
+    // 用于 ZIP 解压模式下通过 DocumentsProvider 选择 HTML 文件
+    private val htmlFilePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val selectedFile = PrivateDirDocumentsProvider.getFileFromUri(uri)
+                if (selectedFile != null && selectedFile.exists() && selectedFile.isFile) {
+                    val relativePath = unzippedDir.toURI().relativize(selectedFile.toURI()).path
+                    loadUrl("http://localhost:8080/$relativePath")
+                } else {
+                    Toast.makeText(this, "无法访问该文件", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun cleanupUnzippedDir() {
+        if (::unzippedDir.isInitialized && unzippedDir.exists()) {
+            try {
+                unzippedDir.deleteRecursively()
+                log("已清理解压目录: ${unzippedDir.absolutePath}")
+            } catch (e: Exception) {
+                log("清理解压目录失败: ${e.message}")
+            }
+        }
+    }
+
+    private fun switchSelectMode() {
+        if (isServerStarted) {
+            // 服务器运行中，提示需先停止
+            AlertDialog.Builder(this)
+                .setTitle("无法切换模式")
+                .setMessage("服务器正在运行，请先停止服务器后再切换模式。\n是否停止服务器？")
+                .setPositiveButton("停止并切换") { _, _ ->
+                    stopServerAndReset {
+                        // 停止完成后切换模式
+                        doSwitchMode()
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        } else {
+            doSwitchMode()
+        }
+    }
+
+    private fun doSwitchMode() {
+        currentSelectMode = if (currentSelectMode == SelectMode.FOLDER) {
+            SelectMode.ZIP
+        } else {
+            SelectMode.FOLDER
+        }
+        // 保存模式
+        selectModePrefs.edit().putString(KEY_SELECT_MODE, currentSelectMode.name).apply()
+        updateSelectModeIcon()
+        updateUIForCurrentMode()
+        val modeName = if (currentSelectMode == SelectMode.FOLDER) "文件夹模式" else " ZIP 解压模式"
+        Toast.makeText(this, "已切换到$modeName", Toast.LENGTH_SHORT).show()
+        log("切换模式为: ${currentSelectMode.name}")
+    }
+
+    private fun updateSelectModeIcon() {
+        val iconRes = when (currentSelectMode) {
+            SelectMode.FOLDER -> R.drawable.baseline_folder_open_24  // 你需要替换为实际的文件夹图标
+            SelectMode.ZIP -> R.drawable.baseline_folder_zip_24       // 你需要替换为实际的ZIP图标
+        }
+        selectDirButton.setImageResource(iconRes)
+        // 如果图标需要着色，可以应用夜间模式颜色
+        applyNightMode()
+    }
+
+    private fun updateUIForCurrentMode() {
+        if (!isServerStarted) {
+            urlEditText.hint = when (currentSelectMode) {
+                SelectMode.FOLDER -> "请先选择服务器根目录"
+                SelectMode.ZIP -> "请先选择 ZIP 包"
+            }
+            // 确保文件选择按钮禁用
+            selectFileButton.isEnabled = false
+            selectFileButton.alpha = 0.4f
+            placeholderView.visibility = View.VISIBLE
+        }
     }
 }
