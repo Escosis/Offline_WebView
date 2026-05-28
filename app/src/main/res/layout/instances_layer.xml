@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/instancesLayerContent"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#DDFFFFFF"> <!-- 默认浅色半透，夜间模式会覆盖 -->
+
+    <TextView
+        android:id="@+id/instancesLayerTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="实例管理图层"
+        android:textSize="20sp"
+        android:textColor="#000000"
+        android:layout_gravity="center"
+        android:layout_marginTop="32dp" />
+
+    <Button
+        android:id="@+id/closeInstancesLayerButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="关闭"
+        android:layout_gravity="center"
+        android:layout_marginTop="16dp" />
+</LinearLayout>

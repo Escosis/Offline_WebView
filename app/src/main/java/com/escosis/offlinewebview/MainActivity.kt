@@ -49,6 +49,8 @@ import java.util.zip.ZipInputStream
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream
 import java.nio.charset.Charset
 import androidx.core.content.ContextCompat
+import android.widget.Button
+import androidx.activity.OnBackPressedCallback
 
 class MainActivity : AppCompatActivity(), DebugLogger {
 
@@ -126,6 +128,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private lateinit var orientationPrefs: SharedPreferences
     private var currentPopupView: LinearLayout? = null
     private var currentSessionUrl: String = ""
+
+    private lateinit var instancesLayer: FrameLayout
+    private var isInstancesLayerVisible = false
+    private lateinit var instancesLayerContent: LinearLayout
+    private lateinit var instancesLayerTitle: TextView
+    private lateinit var closeInstancesLayerButton: Button
+    private lateinit var instancesButton: ImageButton
 
     companion object {
         private const val PREFS_NAME = "app_settings"
@@ -280,6 +289,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateUIAfterDirSelected()
         setupDebugPanel()
         setupMenuButton()
+        setupInstancesLayerCloseButton()
 
         rootFrame.post {
             measureOriginalHeights()
@@ -319,6 +329,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         currentSelectMode = SelectMode.valueOf(savedMode)
         updateSelectModeIcon()
         updateUIForCurrentMode()  // 根据模式更新UI（提示文字等）
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (isInstancesLayerVisible) {
+                    hideInstancesLayer()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
     }
 
     private fun initZipMode() {
@@ -600,6 +621,11 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         floatingBall.colorFilter = PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
         errorView = findViewById(R.id.errorView)
         errorTextView = findViewById(R.id.errorTextView)
+        instancesLayer = findViewById(R.id.instancesLayer)
+        instancesLayerContent = findViewById(R.id.instancesLayerContent)
+        instancesLayerTitle = instancesLayerContent.findViewById(R.id.instancesLayerTitle)
+        closeInstancesLayerButton = instancesLayerContent.findViewById(R.id.closeInstancesLayerButton)
+        instancesButton = findViewById(R.id.instancesButton)
     }
 
     private fun measureOriginalHeights() {
@@ -788,6 +814,15 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             if (!isBarVisible) {
                 showBars()
             }
+        }
+
+        instancesButton.setOnClickListener {
+            if (isInstancesLayerVisible) {
+                hideInstancesLayer()
+            } else {
+                showInstancesLayer()
+            }
+            resetHideTimer()
         }
     }
 
@@ -1129,6 +1164,16 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         setIconColor(forwardButton, if (forwardButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(goButton, if (goButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(selectFileButton, if (selectFileButton.isEnabled) normalIconColor else disabledColor)
+        setIconColor(instancesButton, normalIconColor)
+
+        if (::instancesLayerContent.isInitialized) {
+            val bgColor = if (isNightMode) "#DD333333" else "#DDFFFFFF"
+            instancesLayerContent.setBackgroundColor(Color.parseColor(bgColor))
+            instancesLayerTitle.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
+            // 为关闭按钮设置样式：文字颜色和背景
+            closeInstancesLayerButton.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
+            closeInstancesLayerButton.setBackgroundColor(if (isNightMode) Color.parseColor("#555555") else Color.parseColor("#E0E0E0"))
+        }
 
         // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 解压模式还是普通模式）
         if (isServerStarted) {
@@ -1149,6 +1194,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             (placeholderView.getChildAt(0) as? TextView)?.setTextColor(Color.DKGRAY)
             errorView.setBackgroundColor(Color.parseColor("#F5F5F5"))
             errorTextView.setTextColor(Color.DKGRAY)
+        }
+        if (isInstancesLayerVisible && ::instancesLayerContent.isInitialized) {
+            val bgColor = if (isNightMode) "#DD333333" else "#DDFFFFFF"
+            instancesLayerContent.setBackgroundColor(Color.parseColor(bgColor))
+            instancesLayerTitle.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
+            closeInstancesLayerButton.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
+            closeInstancesLayerButton.setBackgroundColor(if (isNightMode) Color.parseColor("#555555") else Color.parseColor("#E0E0E0"))
         }
     }
 
@@ -1628,6 +1680,27 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             selectFileButton.isEnabled = false
             selectFileButton.alpha = 0.4f
             placeholderView.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showInstancesLayer() {
+        if (isInstancesLayerVisible) return
+        instancesLayer.visibility = View.VISIBLE
+        isInstancesLayerVisible = true
+        // 可选：禁用一些交互
+        log("实例图层已显示")
+    }
+
+    private fun hideInstancesLayer() {
+        if (!isInstancesLayerVisible) return
+        instancesLayer.visibility = View.GONE
+        isInstancesLayerVisible = false
+        log("实例图层已隐藏")
+    }
+    private fun setupInstancesLayerCloseButton() {
+        val closeButton = instancesLayer.findViewById<Button>(R.id.closeInstancesLayerButton)
+        closeButton?.setOnClickListener {
+            hideInstancesLayer()
         }
     }
 }

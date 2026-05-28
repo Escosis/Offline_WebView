@@ -101,6 +101,18 @@
 
             </FrameLayout>
 
+            <FrameLayout
+                android:id="@+id/instancesLayer"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#AA000000"
+                android:visibility="gone"
+                android:clickable="true"
+                android:focusable="true">
+                <!-- 此布局将在单独的 instances_layer.xml 中定义并 include -->
+                <include layout="@layout/instances_layer" />
+            </FrameLayout>
+
             <!-- 调试面板 -->
             <LinearLayout
                 android:id="@+id/debugPanel"
@@ -216,6 +228,16 @@
                 android:src="@drawable/baseline_insert_drive_file_24"
                 android:scaleType="center"
                 android:contentDescription="选择文件" />
+
+            <ImageButton
+                android:id="@+id/instancesButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/tab_group_24"
+                android:scaleType="center"
+                android:contentDescription="实例管理" />
 
             <ImageButton
                 android:id="@+id/menuButton"
