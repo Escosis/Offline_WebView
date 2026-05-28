@@ -48,6 +48,7 @@ import java.io.File
 import java.util.zip.ZipInputStream
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream
 import java.nio.charset.Charset
+import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity(), DebugLogger {
 
@@ -76,7 +77,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private lateinit var toolbar: LinearLayout
     private lateinit var backButton: ImageButton
     private lateinit var forwardButton: ImageButton
-    private lateinit var refreshButton: ImageButton
     private lateinit var selectDirButton: ImageButton
     private lateinit var selectFileButton: ImageButton
     private lateinit var menuButton: ImageButton
@@ -125,6 +125,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var isOrientationAllowed = true
     private lateinit var orientationPrefs: SharedPreferences
     private var currentPopupView: LinearLayout? = null
+    private var currentSessionUrl: String = ""
 
     companion object {
         private const val PREFS_NAME = "app_settings"
@@ -591,7 +592,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         toolbar = findViewById(R.id.toolbar)
         backButton = findViewById(R.id.backButton)
         forwardButton = findViewById(R.id.forwardButton)
-        refreshButton = findViewById(R.id.refreshButton)
         selectDirButton = findViewById(R.id.selectDirButton)
         selectFileButton = findViewById(R.id.selectFileButton)
         menuButton = findViewById(R.id.menuButton)
@@ -671,6 +671,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         geckoSession.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
+                currentSessionUrl = url
                 runOnUiThread {
                     updateUrlBar(url)
                     if (errorView.visibility == View.VISIBLE) {
@@ -688,15 +689,30 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
 
         goButton.setOnClickListener {
-            val input = urlEditText.text.toString().trim()
-            if (input.isNotEmpty()) {
-                log("地址栏输入: $input")
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                imm.hideSoftInputFromWindow(urlEditText.windowToken, 0)
-                Handler(Looper.getMainLooper()).postDelayed({
-                    loadUserInputUrl(input)
-                }, 200)
+            val currentIcon = goButton.drawable?.constantState
+            val refreshIcon = ContextCompat.getDrawable(this, R.drawable.baseline_refresh_24)?.constantState
+            if (currentIcon == refreshIcon) {
+                // 刷新模式
+                if (errorView.visibility == View.VISIBLE && lastRequestedUrl != null) {
+                    log("刷新: 重新加载错误页面 $lastRequestedUrl")
+                    loadUrl(lastRequestedUrl!!)
+                } else {
+                    log("刷新页面")
+                    geckoSession.reload()
+                }
+            } else {
+                // 前往模式
+                val input = urlEditText.text.toString().trim()
+                if (input.isNotEmpty()) {
+                    log("地址栏输入: $input")
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                    imm.hideSoftInputFromWindow(urlEditText.windowToken, 0)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        loadUserInputUrl(input)
+                    }, 200)
+                }
             }
+            resetHideTimer()
         }
     }
 
@@ -715,17 +731,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
             resetHideTimer()
         }
-        refreshButton.setOnClickListener {
-            if (errorView.visibility == View.VISIBLE && lastRequestedUrl != null) {
-                log("刷新: 重新加载错误页面 $lastRequestedUrl")
-                loadUrl(lastRequestedUrl!!)
-            } else {
-                log("刷新页面")
-                geckoSession.reload()
-            }
-            resetHideTimer()
-        }
-
         selectDirButton.setOnClickListener {
             if (isServerStarted) {
                 // 服务器运行中，询问是否停止
@@ -760,13 +765,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             true
         }
 
-        // 文件选择按钮的行为在 updateUIAfterDirSelected 中动态设置
         urlEditText.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 hideHandler.removeCallbacks(hideRunnable)
             } else {
+                val inputText = urlEditText.text.toString()
+                if (inputText.isNotEmpty() && inputText != currentSessionUrl && currentSessionUrl.isNotEmpty()) {
+                    urlEditText.setText(currentSessionUrl)
+                    urlEditText.setSelection(currentSessionUrl.length)
+                }
                 resetHideTimer()
             }
+            updateActionButtonState()
         }
 
         urlEditText.setOnTouchListener { _, _ ->
@@ -784,7 +794,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private fun updateNavigationButtonsState() {
         backButton.isEnabled = isServerStarted && canGoBack
         forwardButton.isEnabled = isServerStarted && canGoForward
-        refreshButton.isEnabled = isServerStarted
+        goButton.isEnabled = isServerStarted
         applyNightMode()
     }
 
@@ -1027,6 +1037,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private fun updateUrlBar(url: String) {
         urlEditText.setText(url)
         urlEditText.setSelection(url.length)
+        updateActionButtonState()
     }
 
     private fun isFileUnderRoot(fileUri: Uri, rootUri: Uri): Boolean {
@@ -1116,9 +1127,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         setIconColor(backButton, if (backButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(forwardButton, if (forwardButton.isEnabled) normalIconColor else disabledColor)
-        setIconColor(refreshButton, if (refreshButton.isEnabled) normalIconColor else disabledColor)
+        setIconColor(goButton, if (goButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(selectFileButton, if (selectFileButton.isEnabled) normalIconColor else disabledColor)
-        setIconColor(goButton, normalIconColor)
 
         // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 解压模式还是普通模式）
         if (isServerStarted) {
@@ -1139,6 +1149,16 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             (placeholderView.getChildAt(0) as? TextView)?.setTextColor(Color.DKGRAY)
             errorView.setBackgroundColor(Color.parseColor("#F5F5F5"))
             errorTextView.setTextColor(Color.DKGRAY)
+        }
+    }
+
+    private fun updateActionButtonState() {
+        if (urlEditText.hasFocus()) {
+            goButton.setImageResource(R.drawable.baseline_arrow_forward_ios_24)
+            goButton.contentDescription = "前往"
+        } else {
+            goButton.setImageResource(R.drawable.baseline_refresh_24)
+            goButton.contentDescription = "刷新"
         }
     }
 

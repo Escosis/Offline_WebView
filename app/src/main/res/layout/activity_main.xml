@@ -196,16 +196,6 @@
                 android:contentDescription="前进" />
 
             <ImageButton
-                android:id="@+id/refreshButton"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@drawable/baseline_refresh_24"
-                android:scaleType="center"
-                android:contentDescription="刷新" />
-
-            <ImageButton
                 android:id="@+id/selectDirButton"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
@@ -234,6 +224,7 @@
                 android:src="@drawable/baseline_menu_24"
                 android:scaleType="center"
                 android:contentDescription="更多选项" />
+
         </LinearLayout>
     </LinearLayout>
 
