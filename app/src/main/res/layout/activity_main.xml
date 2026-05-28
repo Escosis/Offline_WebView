@@ -19,8 +19,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:paddingStart="2dp"
-            android:paddingEnd="2dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
             android:paddingTop="4dp"
             android:paddingBottom="4dp"
             android:background="#F5F5F5">
@@ -30,13 +30,15 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:textSize="14sp"
+                android:gravity="center_vertical"
                 android:hint="请输入网页地址"
                 android:inputType="textUri"
                 android:imeOptions="actionGo"
                 android:singleLine="true"
                 android:padding="6dp"
-                android:textSize="12sp"
-                android:background="@android:drawable/editbox_background_normal" />
+                android:layout_marginEnd="12dp"
+                android:background="@null" />
 
             <ImageButton
                 android:id="@+id/goButton"

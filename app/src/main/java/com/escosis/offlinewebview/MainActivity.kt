@@ -1109,7 +1109,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             rootFrame.setBackgroundColor(Color.BLACK)
             toolbar.setBackgroundColor(Color.BLACK)
             urlBar.setBackgroundColor(Color.BLACK)
-            urlEditText.setBackgroundColor(Color.parseColor("#333333"))
+            urlEditText.setBackgroundColor(Color.BLACK)
             urlEditText.setTextColor(Color.WHITE)
             urlEditText.setHintTextColor(Color.LTGRAY)
             setStatusBarColor(Color.parseColor("#333333"))
@@ -1117,7 +1117,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         } else {
             rootFrame.setBackgroundColor(Color.WHITE)
             toolbar.setBackgroundColor(Color.WHITE)
-            urlBar.setBackgroundColor(Color.parseColor("#EFEFEF"))
+            urlBar.setBackgroundColor(Color.WHITE)
             urlEditText.setBackgroundColor(Color.WHITE)
             urlEditText.setTextColor(Color.BLACK)
             urlEditText.setHintTextColor(Color.GRAY)
@@ -1160,6 +1160,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             goButton.setImageResource(R.drawable.baseline_refresh_24)
             goButton.contentDescription = "刷新"
         }
+        // 重新应用正确的图标颜色
+        val normalIconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
+        setIconColor(goButton, normalIconColor)
     }
 
     private fun hideSystemBars() {
