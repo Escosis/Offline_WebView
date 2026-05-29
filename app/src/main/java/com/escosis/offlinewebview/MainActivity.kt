@@ -154,6 +154,42 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var copyProgressDialog: ProgressDialog? = null
     private var isCopyCancelled = false
 
+    private var pendingReferenceInstance: Instance? = null
+    private var currentInstanceRootDir: File? = null
+
+    private val reauthorizeFolderLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val newUri = result.data?.data
+            if (newUri != null && pendingReferenceInstance != null) {
+                val updated = InstanceManager.updateInstanceSourceUri(pendingReferenceInstance!!.id, newUri.toString())
+                if (updated) {
+                    log("重新授权成功，更新实例: ${pendingReferenceInstance!!.name}")
+                    loadInstance(pendingReferenceInstance!!)
+                } else {
+                    Toast.makeText(this, "更新实例失败", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "授权取消或失败", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("授权失败")
+                .setMessage("无法访问原文件夹，是否删除该实例？")
+                .setPositiveButton("删除") { _, _ ->
+                    pendingReferenceInstance?.let {
+                        InstanceManager.deleteInstance(it.id, deleteFiles = false)
+                        refreshInstanceList()
+                    }
+                    Toast.makeText(this, "已删除实例", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("保留", null)
+                .show()
+        }
+        pendingReferenceInstance = null
+    }
+
     companion object {
         private const val PREFS_NAME = "app_settings"
         private const val KEY_GUIDE_SHOWN = "guide_shown"
@@ -312,6 +348,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             log(message)
         }
         initInstancesUI()
+        PrivateDirDocumentsProvider.init(this)
 
         rootFrame.post {
             measureOriginalHeights()
@@ -365,10 +402,16 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     }
 
     private fun initZipMode() {
-        unzippedDir = File(filesDir, "unzipped_www")
-        if (!unzippedDir.exists()) {
-            unzippedDir.mkdirs()
+        val instancesRoot = File(filesDir, "instances")
+        if (!instancesRoot.exists()) {
+            instancesRoot.mkdirs()
         }
+        unzippedDir = File(instancesRoot, "temp_www")
+        // 确保每次启动时清空旧的临时目录
+        if (unzippedDir.exists()) {
+            unzippedDir.deleteRecursively()
+        }
+        unzippedDir.mkdirs()
     }
 
     private fun setupDebugPanel() {
@@ -950,7 +993,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
                 runOnUiThread {
                     progressDialog.dismiss()
-                    PrivateDirDocumentsProvider.setRootDirectory(unzippedDir)
                     startServerFromFile(unzippedDir)
                 }
             } catch (e: Exception) {
@@ -975,21 +1017,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         try {
             localWebServer?.start()
             isServerStarted = true
-            isZipMode = true
+            isZipMode = true   // 使用私有目录文件选择器
             currentServerRoot = rootFile
+            currentInstanceRootDir = rootFile   // 记录当前实例根目录
             geckoSession.purgeHistory()
             log("服务器已启动，根目录: ${rootFile.absolutePath}")
             runOnUiThread {
                 updateUIAfterDirSelected()
                 loadUrl("http://localhost:8080/")
-                Toast.makeText(this, "服务器已启动 (ZIP解压模式)", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             log("服务器启动失败: ${e.message}")
             isServerStarted = false
-            runOnUiThread {
-                Toast.makeText(this, "服务器启动失败: ${e.message}", Toast.LENGTH_LONG).show()
-            }
         }
     }
 
@@ -1046,22 +1085,20 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // ZIP 解压模式下文件选择
     private fun showFilePickerForPrivateDir() {
-        if (!isZipMode || currentServerRoot !is File) {
-            Toast.makeText(this, "当前不在 ZIP 解压模式", Toast.LENGTH_SHORT).show()
+        val rootDir = currentInstanceRootDir ?: unzippedDir
+        if (!rootDir.exists()) {
+            Toast.makeText(this, "当前实例目录不存在", Toast.LENGTH_SHORT).show()
             return
         }
-        PrivateDirDocumentsProvider.setRootDirectory(unzippedDir)
-
-        val rootUri = PrivateDirDocumentsProvider.getRootDocumentUri(this)
-        if (rootUri == null) {
-            Toast.makeText(this, "无法获取私有目录", Toast.LENGTH_SHORT).show()
-            return
-        }
-
+        // 使用标准方式构建 Document Uri
+        val docUri = DocumentsContract.buildDocumentUri(
+            "${packageName}.provider",
+            rootDir.absolutePath
+        )
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "text/html"
-            putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootUri)
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
         }
         htmlFilePickerLauncher.launch(intent)
     }
@@ -1608,6 +1645,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         isZipMode = false
         currentServerRoot = null
         rootUri = null
+        currentInstanceRootDir = null
         geckoSession.loadUri("about:blank")
         geckoSession.purgeHistory()
         updateUIAfterDirSelected()
@@ -1624,7 +1662,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (currentSelectMode == SelectMode.ZIP) {
             cleanupUnzippedDir()
         }
-
+        updateSelectModeIcon()
         onComplete?.invoke()
     }
 
@@ -1636,7 +1674,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 val selectedFile = PrivateDirDocumentsProvider.getFileFromUri(uri)
                 if (selectedFile != null && selectedFile.exists() && selectedFile.isFile) {
-                    val relativePath = unzippedDir.toURI().relativize(selectedFile.toURI()).path
+                    val serverRoot = currentInstanceRootDir ?: unzippedDir
+                    if (serverRoot == null) {
+                        Toast.makeText(this, "服务器根目录未设置", Toast.LENGTH_SHORT).show()
+                        return@registerForActivityResult
+                    }
+                    // 计算相对路径：去掉服务器根目录部分
+                    val relativePath = if (selectedFile.absolutePath.startsWith(serverRoot.absolutePath)) {
+                        selectedFile.absolutePath.substring(serverRoot.absolutePath.length + 1)
+                    } else {
+                        // 理论上不会走到这里，但保底
+                        selectedFile.name
+                    }
                     loadUrl("http://localhost:8080/$relativePath")
                 } else {
                     Toast.makeText(this, "无法访问该文件", Toast.LENGTH_SHORT).show()
@@ -1655,7 +1704,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
         }
     }
-
     private fun switchSelectMode() {
         if (isServerStarted) {
             // 服务器运行中，提示需先停止
@@ -1746,8 +1794,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         instanceAdapter = InstanceAdapter(
             instances = InstanceManager.getAllInstances(),
             onItemClick = { instance ->
-                log("点击实例: ${instance.name}")
-                Toast.makeText(this, "将加载实例: ${instance.name} (待实现)", Toast.LENGTH_SHORT).show()
+                log("加载实例: ${instance.name}")
+                loadInstance(instance)
             },
             onDeleteClick = { instance ->
                 AlertDialog.Builder(this)
@@ -1942,41 +1990,59 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // 加载实例（简化版，步骤六会完善，目前先实现基本切换）
     private fun loadInstance(instance: Instance) {
-        // 停止当前服务器
-        stopServerAndReset {
-            when (instance.type) {
-                "zip_move" -> {
-                    val dir = File(instance.storageDir)
-                    if (dir.exists()) {
-                        startServerFromFile(dir)
-                        currentInstanceId = instance.id
-                        updateCurrentInstanceDisplay()
-                        // 加载保存的 URL
-                        val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
-                        loadUrl(url)
-                    } else {
-                        Toast.makeText(this, "实例目录不存在", Toast.LENGTH_SHORT).show()
-                    }
+        stopServerOnly()
+
+        when (instance.type) {
+            "reference" -> {
+                val uri = Uri.parse(instance.sourceUri)
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    rootUri = uri
+                    startServer()
+                    isZipMode = false
+                    currentServerRoot = uri
+                    isServerStarted = true
+                    currentInstanceId = instance.id
+                    updateCurrentInstanceDisplay()
+                    val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
+                    loadUrl(url)
+                    selectFileButton.setOnClickListener { openFilePickerInRoot() }
+                    // 引用实例图标：baseline_folder_open_24
+                    selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
+                } catch (e: Exception) {
+                    handleReferenceAuthFailure(instance)
+                    return
                 }
-                "reference" -> {
-                    val uri = Uri.parse(instance.sourceUri)
-                    // 尝试重新获取权限
-                    try {
-                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        rootUri = uri
-                        startServer()
-                        currentInstanceId = instance.id
-                        updateCurrentInstanceDisplay()
-                        val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
-                        loadUrl(url)
-                    } catch (e: Exception) {
-                        Toast.makeText(this, "无法访问原文件夹，请重新授权", Toast.LENGTH_LONG).show()
-                        // 步骤六会处理重新授权
-                    }
+            }
+            else -> { // "copy" 或 "zip_move"
+                val dir = File(instance.storageDir)
+                if (!dir.exists()) {
+                    Toast.makeText(this, "实例目录不存在，可能已被删除", Toast.LENGTH_LONG).show()
+                    AlertDialog.Builder(this)
+                        .setTitle("实例失效")
+                        .setMessage("实例“${instance.name}”的目录不存在，是否从列表中删除？")
+                        .setPositiveButton("删除") { _, _ ->
+                            InstanceManager.deleteInstance(instance.id, deleteFiles = false)
+                            refreshInstanceList()
+                        }
+                        .setNegativeButton("忽略", null)
+                        .show()
+                    return
                 }
-                else -> Toast.makeText(this, "不支持的实例类型", Toast.LENGTH_SHORT).show()
+                startServerFromFile(dir)
+                isZipMode = true   // 本地实例使用私有目录文件选择器
+                currentServerRoot = dir
+                isServerStarted = true
+                currentInstanceId = instance.id
+                updateCurrentInstanceDisplay()
+                val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
+                loadUrl(url)
+                selectFileButton.setOnClickListener { showFilePickerForPrivateDir() }
+                // 本地实例图标：baseline_folder_24
+                selectDirButton.setImageResource(R.drawable.baseline_folder_24)
             }
         }
+        hideInstancesLayer()
     }
     private fun saveCopyInstanceWithProgress(name: String, savedUrl: String) {
         // 创建进度对话框
@@ -2051,5 +2117,30 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer = null
         isServerStarted = false
         // 不清空 currentServerRoot、rootUri、isZipMode 等，留给调用方处理
+    }
+
+    private fun handleReferenceAuthFailure(instance: Instance) {
+        pendingReferenceInstance = instance
+        AlertDialog.Builder(this)
+            .setTitle("需要重新授权")
+            .setMessage("实例“${instance.name}”的原文件夹权限已失效，请重新选择该文件夹。")
+            .setPositiveButton("选择文件夹") { _, _ ->
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, getDownloadsUri())
+                }
+                reauthorizeFolderLauncher.launch(intent)
+            }
+            .setNegativeButton("取消") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("加载失败")
+                    .setMessage("无法加载实例“${instance.name}”，是否从列表中删除？")
+                    .setPositiveButton("删除") { _, _ ->
+                        InstanceManager.deleteInstance(instance.id, deleteFiles = false)
+                        refreshInstanceList()
+                    }
+                    .setNegativeButton("保留", null)
+                    .show()
+            }
+            .show()
     }
 }

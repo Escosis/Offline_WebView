@@ -29,7 +29,7 @@ object InstanceManager {
      */
     fun init(context: Context) {
         if (isInitialized) return
-        instancesDir = File(context.filesDir, "saved_instances")
+        instancesDir = File(context.filesDir, "instances")
         if (!instancesDir.exists()) {
             instancesDir.mkdirs()
         }

@@ -12,43 +12,24 @@ import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileNotFoundException
 
-/**
- * 自定义 DocumentsProvider，用于暴露 App 私有目录下的文件。
- * 可通过系统文件选择器浏览并选择文件（例如 HTML 文件）。
- *
- * 使用流程：
- * 1. 解压 ZIP 成功后调用 PrivateDirDocumentsProvider.setRootDirectory(unzippedDir)
- * 2. 在需要选择文件时，启动 Intent.ACTION_OPEN_DOCUMENT_TREE，
- *    并将 EXTRA_INITIAL_URI 设为 getRootDocumentUri(context)
- * 3. 用户授权后，回调 Uri 的 documentId 即为文件的绝对路径，
- *    可通过 getFileFromUri(uri) 获取真实 File 对象。
- */
 class PrivateDirDocumentsProvider : DocumentsProvider() {
 
     companion object {
         private var rootDirectory: File? = null
 
-        /** 设置根目录（解压成功后的私有目录） */
-        fun setRootDirectory(dir: File) {
-            rootDirectory = dir
-        }
-
-        /** 获取根文档的 Uri，用于文件选择器的初始路径 */
-        fun getRootDocumentUri(context: Context): Uri? {
-            val rootDir = rootDirectory ?: return null
-            // 注意：这里使用标准的 root 路径格式，系统才能识别
-            return Uri.parse("content://${context.packageName}.provider/root/private_root")
+        fun init(context: Context) {
+            rootDirectory = File(context.filesDir, "instances")
+            if (!rootDirectory!!.exists()) {
+                rootDirectory!!.mkdirs()
+            }
         }
 
         /**
-         * 从系统文件选择器返回的 Uri 中提取真实的 File 对象
-         * @param uri 选择器返回的 Uri（例如 content://.../document/%2Fdata%2F...）
-         * @return 对应的 File 对象，如果 Uri 无效或文件不存在则返回 null
+         * 从系统返回的 Uri 中提取真实 File 对象
          */
         fun getFileFromUri(uri: Uri): File? {
             val documentId = DocumentsContract.getDocumentId(uri)
-            // documentId 可能被 URL 编码，需要解码
-            val decoded = android.net.Uri.decode(documentId)
+            val decoded = Uri.decode(documentId)
             val file = File(decoded)
             return if (file.exists()) file else null
         }
@@ -57,11 +38,7 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
     override fun onCreate(): Boolean = true
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
-        val rootDir = rootDirectory
-        if (rootDir == null || !rootDir.exists()) {
-            return MatrixCursor(projection ?: emptyArray())
-        }
-
+        val rootDir = rootDirectory ?: return MatrixCursor(projection ?: emptyArray())
         val cols = projection ?: arrayOf(
             DocumentsContract.Root.COLUMN_ROOT_ID,
             DocumentsContract.Root.COLUMN_DOCUMENT_ID,
@@ -73,11 +50,10 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
         val cursor = MatrixCursor(cols)
         cursor.addRow(
             arrayOf(
-                "private_root",                     // ROOT_ID
-                rootDir.absolutePath,               // DOCUMENT_ID（根文档标识）
-                "Offline WebView",                     // 显示名称
-                DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
-                        DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD,
+                "instances_root",
+                rootDir.absolutePath,
+                "Offline WebView",
+                DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD,
                 null,
                 "*/*"
             )
@@ -156,10 +132,7 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
         parentDocumentId: String,
         mimeType: String,
         displayName: String
-    ): String? {
-        // 暂不支持创建文件
-        return null
-    }
+    ): String? = null
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean {
         return File(documentId).canonicalPath.startsWith(File(parentDocumentId).canonicalPath)
