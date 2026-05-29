@@ -25,7 +25,6 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -51,6 +50,17 @@ import java.nio.charset.Charset
 import androidx.core.content.ContextCompat
 import android.widget.Button
 import androidx.activity.OnBackPressedCallback
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import android.widget.EditText
+import kotlinx.coroutines.Dispatchers
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlin.coroutines.CoroutineContext
 
 class MainActivity : AppCompatActivity(), DebugLogger {
 
@@ -131,10 +141,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     private lateinit var instancesLayer: FrameLayout
     private var isInstancesLayerVisible = false
-    private lateinit var instancesLayerContent: LinearLayout
-    private lateinit var instancesLayerTitle: TextView
-    private lateinit var closeInstancesLayerButton: Button
+    private lateinit var instancesRecyclerView: RecyclerView
+    private lateinit var instanceAdapter: InstanceAdapter
+    private lateinit var currentInstanceText: TextView
+    private var currentInstanceId: String? = null
     private lateinit var instancesButton: ImageButton
+    private lateinit var instancesLayerContent: LinearLayout
+    private lateinit var saveInstanceButton: ImageButton
+    private lateinit var instancesTopBar: LinearLayout
+    private var isSaving = false
+    private var copyJob: Job? = null
+    private var copyProgressDialog: ProgressDialog? = null
+    private var isCopyCancelled = false
 
     companion object {
         private const val PREFS_NAME = "app_settings"
@@ -289,7 +307,11 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateUIAfterDirSelected()
         setupDebugPanel()
         setupMenuButton()
-        setupInstancesLayerCloseButton()
+        InstanceManager.init(this)
+        InstanceManager.logger = { message ->
+            log(message)
+        }
+        initInstancesUI()
 
         rootFrame.post {
             measureOriginalHeights()
@@ -622,9 +644,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         errorView = findViewById(R.id.errorView)
         errorTextView = findViewById(R.id.errorTextView)
         instancesLayer = findViewById(R.id.instancesLayer)
-        instancesLayerContent = findViewById(R.id.instancesLayerContent)
-        instancesLayerTitle = instancesLayerContent.findViewById(R.id.instancesLayerTitle)
-        closeInstancesLayerButton = instancesLayerContent.findViewById(R.id.closeInstancesLayerButton)
         instancesButton = findViewById(R.id.instancesButton)
     }
 
@@ -1116,6 +1135,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         geckoSession.close()
         dismissOverflowMenu()
         cleanupUnzippedDir()
+        copyJob?.cancel()
+        copyProgressDialog?.dismiss()
     }
 
     private fun setStatusBarColor(color: Int) {
@@ -1166,15 +1187,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         setIconColor(selectFileButton, if (selectFileButton.isEnabled) normalIconColor else disabledColor)
         setIconColor(instancesButton, normalIconColor)
 
-        if (::instancesLayerContent.isInitialized) {
-            val bgColor = if (isNightMode) "#DD333333" else "#DDFFFFFF"
-            instancesLayerContent.setBackgroundColor(Color.parseColor(bgColor))
-            instancesLayerTitle.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
-            // 为关闭按钮设置样式：文字颜色和背景
-            closeInstancesLayerButton.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
-            closeInstancesLayerButton.setBackgroundColor(if (isNightMode) Color.parseColor("#555555") else Color.parseColor("#E0E0E0"))
-        }
-
         // 目录按钮：服务器已启动时显示钴蓝色（无论 ZIP 解压模式还是普通模式）
         if (isServerStarted) {
             selectDirButton.setColorFilter(Color.rgb(0, 75, 171), PorterDuff.Mode.SRC_IN)
@@ -1195,12 +1207,31 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             errorView.setBackgroundColor(Color.parseColor("#F5F5F5"))
             errorTextView.setTextColor(Color.DKGRAY)
         }
-        if (isInstancesLayerVisible && ::instancesLayerContent.isInitialized) {
-            val bgColor = if (isNightMode) "#DD333333" else "#DDFFFFFF"
-            instancesLayerContent.setBackgroundColor(Color.parseColor(bgColor))
-            instancesLayerTitle.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
-            closeInstancesLayerButton.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
-            closeInstancesLayerButton.setBackgroundColor(if (isNightMode) Color.parseColor("#555555") else Color.parseColor("#E0E0E0"))
+
+        if (::instancesLayerContent.isInitialized) {
+            val bgColor = if (isNightMode) Color.parseColor("#DD333333") else Color.parseColor("#DDFFFFFF")
+            instancesLayerContent.setBackgroundColor(bgColor)
+
+            // 顶部栏背景（透明或跟随列表项背景）
+            instancesTopBar.setBackgroundColor(Color.TRANSPARENT)
+
+            // 当前实例文字颜色
+            currentInstanceText.setTextColor(if (isNightMode) Color.WHITE else Color.BLACK)
+
+            // 保存按钮图标颜色
+            val iconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
+            saveInstanceButton.drawable?.setColorFilter(
+                PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
+            )
+
+            // 同步夜间模式到适配器
+            if (::instanceAdapter.isInitialized) {
+                instanceAdapter.isNightMode = isNightMode
+            }
+
+            // 分割线颜色
+            val divider = instancesLayer.findViewById<View>(R.id.divider)
+            divider?.setBackgroundColor(if (isNightMode) Color.parseColor("#444444") else Color.parseColor("#CCCCCC"))
         }
     }
 
@@ -1590,7 +1621,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
         log("服务器已停止，界面已重置")
 
-        // 如果是 ZIP 解压模式，清理解压目录（但不影响模式状态）
         if (currentSelectMode == SelectMode.ZIP) {
             cleanupUnzippedDir()
         }
@@ -1683,24 +1713,343 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
+    /**
+     * 显示实例图层，并刷新列表数据
+     */
     private fun showInstancesLayer() {
         if (isInstancesLayerVisible) return
+        // 每次显示前刷新实例列表（确保数据最新）
+        refreshInstanceList()
         instancesLayer.visibility = View.VISIBLE
         isInstancesLayerVisible = true
-        // 可选：禁用一些交互
         log("实例图层已显示")
     }
 
+    /**
+     * 隐藏实例图层
+     */
     private fun hideInstancesLayer() {
         if (!isInstancesLayerVisible) return
         instancesLayer.visibility = View.GONE
         isInstancesLayerVisible = false
         log("实例图层已隐藏")
     }
-    private fun setupInstancesLayerCloseButton() {
-        val closeButton = instancesLayer.findViewById<Button>(R.id.closeInstancesLayerButton)
-        closeButton?.setOnClickListener {
-            hideInstancesLayer()
+
+    // 在 onCreate 中初始化实例列表（在 InstanceManager.init 之后）
+    private fun initInstancesUI() {
+        instancesLayerContent = instancesLayer.findViewById(R.id.instancesLayerContent)
+        instancesRecyclerView = instancesLayer.findViewById(R.id.instancesRecyclerView) as RecyclerView
+        currentInstanceText = instancesLayer.findViewById(R.id.currentInstanceText)
+        saveInstanceButton = instancesLayer.findViewById(R.id.saveInstanceButton)
+        instancesTopBar = instancesLayer.findViewById(R.id.instancesTopBar)
+
+        instanceAdapter = InstanceAdapter(
+            instances = InstanceManager.getAllInstances(),
+            onItemClick = { instance ->
+                log("点击实例: ${instance.name}")
+                Toast.makeText(this, "将加载实例: ${instance.name} (待实现)", Toast.LENGTH_SHORT).show()
+            },
+            onDeleteClick = { instance ->
+                AlertDialog.Builder(this)
+                    .setTitle("删除实例")
+                    .setMessage("确定要删除实例“${instance.name}”吗？")
+                    .setPositiveButton("删除") { _, _ ->
+                        val deleted = InstanceManager.deleteInstance(instance.id, deleteFiles = false)
+                        if (deleted) {
+                            refreshInstanceList()
+                            Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this, "删除失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        )
+        instancesRecyclerView.layoutManager = LinearLayoutManager(this)
+        instancesRecyclerView.adapter = instanceAdapter
+
+        saveInstanceButton.setOnClickListener {
+            if (isSaving) {
+                Toast.makeText(this, "正在保存中，请稍候", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (!isServerStarted) {
+                Toast.makeText(this, "没有运行中的服务器，无法保存", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            showSaveInstanceDialog()
         }
+
+        refreshInstanceList()
+    }
+
+    // 刷新列表并更新当前实例显示
+    private fun refreshInstanceList() {
+        val instances = InstanceManager.getAllInstances()
+        instanceAdapter.updateData(instances)
+        updateCurrentInstanceDisplay()
+    }
+
+    // 更新顶部当前实例名称
+    private fun updateCurrentInstanceDisplay() {
+        val currentName = if (currentInstanceId != null) {
+            InstanceManager.getInstanceById(currentInstanceId!!)?.name ?: "无"
+        } else {
+            "无"
+        }
+        currentInstanceText.text = "当前实例：$currentName"
+    }
+
+    // 显示保存实例对话框
+    private fun showSaveInstanceDialog() {
+        val currentUrl = getCurrentRelativeUrl()
+        val defaultName = generateDefaultInstanceName()
+
+        val inputEditText = EditText(this).apply {
+            setText(defaultName)
+            selectAll()
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("保存实例")
+            .setMessage("请输入实例名称：")
+            .setView(inputEditText)
+            .setPositiveButton("保存") { _, _ ->
+                val name = inputEditText.text.toString().trim()
+                if (name.isEmpty()) {
+                    Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show()
+                    showSaveInstanceDialog() // 重新弹出
+                    return@setPositiveButton
+                }
+                startSaveInstance(name, currentUrl)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    // 生成默认实例名称（当前日期时间）
+    private fun generateDefaultInstanceName(): String {
+        val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        return "实例_${sdf.format(Date())}"
+    }
+
+    // 获取当前页面的相对 URL（去掉 http://localhost:8080/ 前缀）
+    private fun getCurrentRelativeUrl(): String {
+        val fullUrl = currentSessionUrl
+        val prefix = "http://localhost:8080/"
+        return if (fullUrl.startsWith(prefix)) {
+            fullUrl.substring(prefix.length)
+        } else {
+            ""
+        }
+    }
+
+    // 开始保存实例
+    private fun startSaveInstance(name: String, savedUrl: String) {
+        if (isSaving) return
+        isSaving = true
+
+        // 检查名称是否已存在
+        if (InstanceManager.isNameExists(name)) {
+            Toast.makeText(this, "实例名称已存在，请重新输入", Toast.LENGTH_SHORT).show()
+            isSaving = false
+            showSaveInstanceDialog()
+            return
+        }
+
+        when {
+            isZipMode -> {
+                // ZIP 解压模式：移动 unzippedDir
+                saveZipInstance(name, savedUrl)
+            }
+            rootUri != null -> {
+                // 外部文件夹模式：弹出选择
+                showSaveModeDialog(name, savedUrl)
+            }
+            else -> {
+                Toast.makeText(this, "无法确定当前服务器模式", Toast.LENGTH_SHORT).show()
+                isSaving = false
+            }
+        }
+    }
+
+    // 显示保存模式选择对话框（仅外部文件夹模式）
+    private fun showSaveModeDialog(name: String, savedUrl: String) {
+        val options = arrayOf("仅保存路径（引用原文件夹）", "复制全部文件（占用存储空间）")
+        AlertDialog.Builder(this)
+            .setTitle("选择保存方式")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> saveReferenceInstance(name, savedUrl)
+                    1 -> saveCopyInstanceWithProgress(name, savedUrl)
+                }
+            }
+            .setOnCancelListener { isSaving = false }
+            .show()
+    }
+
+    // ZIP 模式保存
+    private fun saveZipInstance(name: String, savedUrl: String) {
+        val currentUnzippedDir = unzippedDir
+        // 1. 仅停止服务器，不清理
+        stopServerOnly()
+
+        // 2. 在后台线程移动目录
+        Thread {
+            val instance = InstanceManager.saveZipInstance(name, savedUrl, currentUnzippedDir)
+            runOnUiThread {
+                isSaving = false
+                if (instance != null) {
+                    // 移动成功，完全重置当前状态
+                    isZipMode = false
+                    currentServerRoot = null
+                    rootUri = null
+                    updateUIAfterDirSelected()  // 清空 UI
+                    Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
+                    refreshInstanceList()
+                    hideInstancesLayer()
+                    // 自动加载新实例
+                    loadInstance(instance)
+                } else {
+                    // 移动失败，尝试重启原服务器（原目录还在）
+                    startServerFromFile(currentUnzippedDir)
+                    AlertDialog.Builder(this)
+                        .setTitle("保存失败")
+                        .setMessage("无法移动目录，请重试")
+                        .setPositiveButton("重试") { _, _ -> showSaveInstanceDialog() }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    // 引用模式保存
+    private fun saveReferenceInstance(name: String, savedUrl: String) {
+        val instance = InstanceManager.saveReferenceInstance(name, savedUrl, rootUri!!)
+        isSaving = false
+        if (instance != null) {
+            Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
+            refreshInstanceList()
+            hideInstancesLayer()
+            // 自动加载新实例（引用模式加载时需要处理授权）
+            loadInstance(instance)
+        } else {
+            Toast.makeText(this, "保存失败（可能名称重复）", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // 加载实例（简化版，步骤六会完善，目前先实现基本切换）
+    private fun loadInstance(instance: Instance) {
+        // 停止当前服务器
+        stopServerAndReset {
+            when (instance.type) {
+                "zip_move" -> {
+                    val dir = File(instance.storageDir)
+                    if (dir.exists()) {
+                        startServerFromFile(dir)
+                        currentInstanceId = instance.id
+                        updateCurrentInstanceDisplay()
+                        // 加载保存的 URL
+                        val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
+                        loadUrl(url)
+                    } else {
+                        Toast.makeText(this, "实例目录不存在", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                "reference" -> {
+                    val uri = Uri.parse(instance.sourceUri)
+                    // 尝试重新获取权限
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        rootUri = uri
+                        startServer()
+                        currentInstanceId = instance.id
+                        updateCurrentInstanceDisplay()
+                        val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
+                        loadUrl(url)
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "无法访问原文件夹，请重新授权", Toast.LENGTH_LONG).show()
+                        // 步骤六会处理重新授权
+                    }
+                }
+                else -> Toast.makeText(this, "不支持的实例类型", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    private fun saveCopyInstanceWithProgress(name: String, savedUrl: String) {
+        // 创建进度对话框
+        copyProgressDialog = ProgressDialog(this).apply {
+            setTitle("正在复制文件")
+            setMessage("准备复制...")
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            setCancelable(true)
+            setButton(ProgressDialog.BUTTON_NEGATIVE, "取消") { _, _ ->
+                isCopyCancelled = true
+                copyJob?.cancel()
+            }
+            setOnCancelListener {
+                isCopyCancelled = true
+                copyJob?.cancel()
+            }
+            show()
+        }
+
+        isCopyCancelled = false
+        isSaving = true
+
+        // 启动复制任务
+        copyJob = GlobalScope.launch(Dispatchers.Main) {
+            InstanceManager.saveCopyInstance(
+                name = name,
+                savedUrl = savedUrl,
+                rootUri = rootUri!!,
+                context = this@MainActivity,
+                onProgress = { fileName ->
+                    // 更新进度对话框
+                    copyProgressDialog?.setMessage("正在复制: $fileName")
+                },
+                onComplete = { instance ->
+                    copyProgressDialog?.dismiss()
+                    copyProgressDialog = null
+                    isSaving = false
+                    copyJob = null
+
+                    if (instance != null && !isCopyCancelled) {
+                        Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
+                        refreshInstanceList()
+                        hideInstancesLayer()
+                        // 自动加载新实例
+                        loadInstance(instance)
+                    } else {
+                        if (isCopyCancelled) {
+                            Toast.makeText(this@MainActivity, "复制已取消", Toast.LENGTH_SHORT).show()
+                        } else {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("保存失败")
+                                .setMessage("复制文件时发生错误，请重试或选择仅保存路径")
+                                .setPositiveButton("重试") { _, _ ->
+                                    // 重新弹出保存对话框
+                                    showSaveInstanceDialog()
+                                }
+                                .setNegativeButton("取消", null)
+                                .show()
+                        }
+                    }
+                },
+                isCancelled = { isCopyCancelled }
+            )
+        }
+    }
+
+    /**
+     * 仅停止服务器，不清理任何目录或重置 UI（用于保存时的移动操作）
+     */
+    private fun stopServerOnly() {
+        localWebServer?.stop()
+        localWebServer = null
+        isServerStarted = false
+        // 不清空 currentServerRoot、rootUri、isZipMode 等，留给调用方处理
     }
 }
