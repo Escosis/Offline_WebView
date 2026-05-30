@@ -1668,9 +1668,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // 用于 ZIP 解压模式下通过 DocumentsProvider 选择 HTML 文件
     private val htmlFilePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        // 恢复根目录为 instances
-        val instancesRoot = File(filesDir, "instances")
-        PrivateDirDocumentsProvider.setCurrentRootDirectory(this, instancesRoot)
 
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data

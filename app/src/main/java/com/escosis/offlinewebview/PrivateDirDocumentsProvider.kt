@@ -62,7 +62,7 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
             arrayOf(
                 "private_root",
                 rootDir.absolutePath,
-                "当前目录",
+                "Offline WebView",
                 DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD,
                 null,
                 "*/*"
