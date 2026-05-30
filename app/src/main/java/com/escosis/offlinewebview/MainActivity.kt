@@ -407,11 +407,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             instancesRoot.mkdirs()
         }
         unzippedDir = File(instancesRoot, "temp_www")
-        // 确保每次启动时清空旧的临时目录
-        if (unzippedDir.exists()) {
-            unzippedDir.deleteRecursively()
+        if (!unzippedDir.exists()) {
+            unzippedDir.mkdirs()
         }
-        unzippedDir.mkdirs()
     }
 
     private fun setupDebugPanel() {
@@ -1085,22 +1083,24 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // ZIP 解压模式下文件选择
     private fun showFilePickerForPrivateDir() {
-        val rootDir = currentInstanceRootDir ?: unzippedDir
-        if (!rootDir.exists()) {
-            Toast.makeText(this, "当前实例目录不存在", Toast.LENGTH_SHORT).show()
+        val serverRoot = currentInstanceRootDir ?: unzippedDir
+        if (!serverRoot.exists()) {
+            Toast.makeText(this, "当前服务器根目录不存在", Toast.LENGTH_SHORT).show()
             return
         }
-        // 使用标准方式构建 Document Uri
-        val docUri = DocumentsContract.buildDocumentUri(
-            "${packageName}.provider",
-            rootDir.absolutePath
-        )
+        PrivateDirDocumentsProvider.setCurrentRootDirectory(this, serverRoot)  // 传入 context
+        val rootUri = PrivateDirDocumentsProvider.getRootDocumentUri(this)
+        if (rootUri == null) {
+            Toast.makeText(this, "无法获取私有目录 URI", Toast.LENGTH_SHORT).show()
+            return
+        }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "text/html"
-            putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootUri)
         }
         htmlFilePickerLauncher.launch(intent)
+        log("服务器根目录: ${serverRoot.absolutePath}")
     }
 
     private fun loadUserInputUrl(input: String) {
@@ -1668,6 +1668,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // 用于 ZIP 解压模式下通过 DocumentsProvider 选择 HTML 文件
     private val htmlFilePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        // 恢复根目录为 instances
+        val instancesRoot = File(filesDir, "instances")
+        PrivateDirDocumentsProvider.setCurrentRootDirectory(this, instancesRoot)
+
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data
             if (uri != null) {
@@ -1679,11 +1683,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         Toast.makeText(this, "服务器根目录未设置", Toast.LENGTH_SHORT).show()
                         return@registerForActivityResult
                     }
-                    // 计算相对路径：去掉服务器根目录部分
                     val relativePath = if (selectedFile.absolutePath.startsWith(serverRoot.absolutePath)) {
                         selectedFile.absolutePath.substring(serverRoot.absolutePath.length + 1)
                     } else {
-                        // 理论上不会走到这里，但保底
                         selectedFile.name
                     }
                     loadUrl("http://localhost:8080/$relativePath")

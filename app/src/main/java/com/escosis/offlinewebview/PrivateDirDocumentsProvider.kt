@@ -18,15 +18,25 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
         private var rootDirectory: File? = null
 
         fun init(context: Context) {
+            // 初始根目录为 instances（所有实例的父目录）
             rootDirectory = File(context.filesDir, "instances")
-            if (!rootDirectory!!.exists()) {
-                rootDirectory!!.mkdirs()
-            }
+            rootDirectory?.mkdirs()
         }
 
-        /**
-         * 从系统返回的 Uri 中提取真实 File 对象
-         */
+        /** 动态设置当前根目录（选择文件前调用） */
+        fun setCurrentRootDirectory(context: Context, dir: File) {
+            rootDirectory = dir
+            // 强制刷新，让系统重新查询 roots
+            val contentUri = Uri.parse("content://${context.packageName}.provider/")
+            context.contentResolver.notifyChange(contentUri, null)
+        }
+
+        /** 获取根文档的 URI（指向当前 rootDirectory） */
+        fun getRootDocumentUri(context: Context): Uri? {
+            val rootDir = rootDirectory ?: return null
+            return Uri.parse("content://${context.packageName}.provider/root/private_root")
+        }
+
         fun getFileFromUri(uri: Uri): File? {
             val documentId = DocumentsContract.getDocumentId(uri)
             val decoded = Uri.decode(documentId)
@@ -50,9 +60,9 @@ class PrivateDirDocumentsProvider : DocumentsProvider() {
         val cursor = MatrixCursor(cols)
         cursor.addRow(
             arrayOf(
-                "instances_root",
+                "private_root",
                 rootDir.absolutePath,
-                "Offline WebView",
+                "当前目录",
                 DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD,
                 null,
                 "*/*"
