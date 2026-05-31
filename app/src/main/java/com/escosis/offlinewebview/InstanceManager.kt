@@ -247,63 +247,53 @@ object InstanceManager {
         destDir: File,
         context: Context,
         onProgress: (String) -> Unit,
+        onCountUpdate: ((copied: Int, total: Int) -> Unit)? = null,   // 新增，可选
         isCancelled: () -> Boolean
     ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val rootDoc = DocumentFile.fromTreeUri(context, rootUri)
-            if (rootDoc == null || !rootDoc.exists()) {
-                log("源文件夹不存在或无法访问")
-                return@withContext false
-            }
-            return@withContext copyDocumentRecursively(rootDoc, destDir, context, onProgress, isCancelled)
-        } catch (e: Exception) {
-            log("复制失败: ${e.message}")
-            return@withContext false
-        }
-    }
+        // 先统计总文件数
+        val totalFiles = countFilesInUri(rootUri, context)
+        if (totalFiles == 0) return@withContext false
 
-    private suspend fun copyDocumentRecursively(
-        sourceDoc: DocumentFile,
-        destDir: File,
-        context: Context,
-        onProgress: (String) -> Unit,
-        isCancelled: () -> Boolean
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (isCancelled()) return@withContext false
-        val children = sourceDoc.listFiles()
-        for (child in children) {
-            if (isCancelled()) return@withContext false
+        val rootDoc = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext false
 
-            val rawName = child.name ?: continue
-            val safeName = rawName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            val destFile = File(destDir, safeName)
+        var copiedCount = 0
 
-            try {
-                if (child.isDirectory) {
-                    if (!destFile.exists() && !destFile.mkdirs()) {
-                        log("创建目录失败: ${destFile.absolutePath}")
-                        return@withContext false
-                    }
-                    if (!copyDocumentRecursively(child, destFile, context, onProgress, isCancelled)) {
-                        return@withContext false
-                    }
-                } else {
-                    // 更新进度（必须在主线程）
-                    withContext(Dispatchers.Main) {
-                        onProgress(safeName)
-                    }
-                    context.contentResolver.openInputStream(child.uri)?.use { input ->
-                        destFile.outputStream().use { output ->
-                            input.copyTo(output, 32 * 1024)
+        suspend fun copyRecursive(doc: DocumentFile, destDir: File): Boolean {
+            for (child in doc.listFiles()) {
+                if (isCancelled()) return false
+                val safeName = child.name?.replace(Regex("[\\\\/:*?\"<>|]"), "_") ?: continue
+                val destFile = File(destDir, safeName)
+
+                try {
+                    if (child.isDirectory) {
+                        if (!destFile.exists() && !destFile.mkdirs()) return false
+                        if (!copyRecursive(child, destFile)) return false
+                    } else {
+                        // 更新当前文件名
+                        withContext(Dispatchers.Main) { onProgress(safeName) }
+                        // 复制文件内容
+                        context.contentResolver.openInputStream(child.uri)?.use { input ->
+                            destFile.outputStream().use { output ->
+                                input.copyTo(output, 32 * 1024)
+                            }
+                        } ?: return false
+                        // 计数增加
+                        copiedCount++
+                        // 回调进度
+                        onCountUpdate?.let {
+                            withContext(Dispatchers.Main) {
+                                it(copiedCount, totalFiles)
+                            }
                         }
-                    } ?: throw Exception("无法打开输入流")
+                    }
+                } catch (e: Exception) {
+                    return false
                 }
-            } catch (e: Exception) {
-                log("复制失败: $rawName - ${e.message}")
-                return@withContext false
             }
+            return true
         }
-        return@withContext true
+
+        return@withContext copyRecursive(rootDoc, destDir)
     }
 
     // 添加保存复制实例的方法（步骤五完整实现）
@@ -313,36 +303,34 @@ object InstanceManager {
         rootUri: Uri,
         context: Context,
         onProgress: (String) -> Unit,
+        onCountUpdate: ((Int, Int) -> Unit)? = null,   // 新增参数
         onComplete: (Instance?) -> Unit,
         isCancelled: () -> Boolean
     ) {
-        // 重复检查
         if (isNameExists(name)) {
             onComplete(null)
             return
         }
 
-        // 准备目标目录
         val safeName = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
         val timestamp = System.currentTimeMillis()
         val targetDirName = "${safeName}_$timestamp"
         val targetDir = File(instancesDir, targetDirName)
 
-        // 在后台线程执行复制
         GlobalScope.launch(Dispatchers.IO) {
             try {
                 // 创建目标目录
                 if (!targetDir.exists() && !targetDir.mkdirs()) {
-                    log("创建目标目录失败")
                     withContext(Dispatchers.Main) { onComplete(null) }
                     return@launch
                 }
 
-                // 执行复制
-                val success = copyUriToDirectory(rootUri, targetDir, context, onProgress, isCancelled)
+                // 开始复制（内部会统计总数并回调进度）
+                val success = copyUriToDirectory(
+                    rootUri, targetDir, context, onProgress, onCountUpdate, isCancelled
+                )
 
                 if (success && !isCancelled()) {
-                    // 创建实例
                     val instance = Instance(
                         name = name,
                         type = "copy",
@@ -356,18 +344,12 @@ object InstanceManager {
                         onComplete(if (added) instance else null)
                     }
                 } else {
-                    // 复制失败或取消，清理目标目录
                     targetDir.deleteRecursively()
-                    withContext(Dispatchers.Main) {
-                        onComplete(null)
-                    }
+                    withContext(Dispatchers.Main) { onComplete(null) }
                 }
             } catch (e: Exception) {
-                log("复制过程异常: ${e.message}")
                 targetDir.deleteRecursively()
-                withContext(Dispatchers.Main) {
-                    onComplete(null)
-                }
+                withContext(Dispatchers.Main) { onComplete(null) }
             }
         }
     }
@@ -375,5 +357,22 @@ object InstanceManager {
     private fun log(message: String) {
         // 优先使用外部 logger（如 MainActivity 的 log 方法）
         logger?.invoke(message) ?: Log.d(TAG, message)
+    }
+
+    // 在 InstanceManager 内部增加
+    private suspend fun countFilesInUri(rootUri: Uri, context: Context): Int = withContext(Dispatchers.IO) {
+        var count = 0
+        fun countDoc(doc: DocumentFile) {
+            for (child in doc.listFiles()) {
+                if (child.isDirectory) {
+                    countDoc(child)
+                } else {
+                    count++
+                }
+            }
+        }
+        val rootDoc = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext 0
+        countDoc(rootDoc)
+        count
     }
 }

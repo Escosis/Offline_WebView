@@ -21,6 +21,15 @@ class InstanceAdapter(
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 
+    private var currentInstanceId: String? = null
+    private var isDeleteEnabled = true   // 整体删除是否允许（当前是否有实例运行且为已保存）
+
+    fun setCurrentInstanceId(instanceId: String?, enableDelete: Boolean) {
+        currentInstanceId = instanceId
+        isDeleteEnabled = enableDelete
+        notifyDataSetChanged()
+    }
+
     // 夜间模式标志，外部修改后刷新整个列表
     var isNightMode: Boolean = false
         set(value) {
@@ -36,8 +45,7 @@ class InstanceAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val instance = instances[position]
-        val displayName = instance.name
-        holder.nameText.text = displayName
+        holder.nameText.text = instance.name
         holder.timeText.text = dateFormat.format(Date(instance.createdAt))
 
         // 设置文字颜色（夜间模式适配）
@@ -46,8 +54,18 @@ class InstanceAdapter(
         holder.nameText.setTextColor(textColor)
         holder.timeText.setTextColor(timeColor)
 
-        // 设置删除按钮图标颜色（夜间模式适配）
-        val iconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
+        // 判断当前项是否为正在运行的实例
+        val isCurrent = instance.id == currentInstanceId
+        // 删除按钮可用性：如果当前是正在运行的实例且不允许删除（isDeleteEnabled = true），则禁用；否则启用
+        val deleteEnabled = if (isCurrent) !isDeleteEnabled else true
+        holder.deleteButton.isEnabled = deleteEnabled
+
+        // 根据启用状态和夜间模式设置图标颜色
+        val iconColor = if (deleteEnabled) {
+            if (isNightMode) Color.WHITE else Color.DKGRAY
+        } else {
+            if (isNightMode) Color.DKGRAY else Color.LTGRAY
+        }
         holder.deleteButton.drawable?.setColorFilter(
             PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
         )

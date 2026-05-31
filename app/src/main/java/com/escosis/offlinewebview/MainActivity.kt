@@ -58,6 +58,8 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import android.view.ViewTreeObserver
+import android.widget.ProgressBar
+import androidx.documentfile.provider.DocumentFile
 
 class MainActivity : AppCompatActivity(), DebugLogger {
 
@@ -157,6 +159,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var currentFileBrowserDialog: AlertDialog? = null
     private var currentBrowserRoot: File? = null
     private var currentBrowserCurrentDir: File? = null
+
+    private var isCurrentInstanceSaved = false
 
     // 文件类型处理策略接口
     interface FileOpenStrategy {
@@ -349,19 +353,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             lockCurrentOrientation()
         }
 
-        initZipMode()  // 初始化解压目录
+        initZipMode()
         initViews()
         setupGeckoView()
         setupListeners()
+        InstanceManager.init(this)
+        InstanceManager.logger = { message -> log(message) }
+        initInstancesUI()
         applyNightMode()
         updateUIAfterDirSelected()
         setupDebugPanel()
         setupMenuButton()
-        InstanceManager.init(this)
-        InstanceManager.logger = { message ->
-            log(message)
-        }
-        initInstancesUI()
 
         rootFrame.post {
             measureOriginalHeights()
@@ -1031,6 +1033,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isZipMode = true   // 使用私有目录文件选择器
             currentServerRoot = rootFile
             currentInstanceRootDir = rootFile   // 记录当前实例根目录
+            isCurrentInstanceSaved = false   // 新增
+            updateDeleteAndSaveButtonsState() // 新增
             geckoSession.purgeHistory()
             log("服务器已启动，根目录: ${rootFile.absolutePath}")
             runOnUiThread {
@@ -1053,6 +1057,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isServerStarted = true
             isZipMode = false   // 文件夹模式
             currentServerRoot = rootUri
+            isCurrentInstanceSaved = false
+            updateDeleteAndSaveButtonsState()
             geckoSession.purgeHistory()
             log("服务器启动成功，端口 8080")
             runOnUiThread {
@@ -1272,6 +1278,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             val divider = instancesLayer.findViewById<View>(R.id.divider)
             divider?.setBackgroundColor(if (isNightMode) Color.parseColor("#444444") else Color.parseColor("#CCCCCC"))
         }
+        if (::saveInstanceButton.isInitialized) {
+            val iconColor = if (saveInstanceButton.isEnabled) normalIconColor else disabledColor
+            saveInstanceButton.drawable?.setColorFilter(PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN))
+        }
     }
 
     private fun updateActionButtonState() {
@@ -1487,6 +1497,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         if (!::selectDirButton.isInitialized ||
             !::selectFileButton.isInitialized ||
+            !::instancesButton.isInitialized ||   // 新增检查
             !::urlEditText.isInitialized
         ) {
             isGuideRunning = false
@@ -1523,6 +1534,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         .textColorInt(Color.WHITE)
                         .cancelable(false)
                         .tintTarget(true),
+                    TapTarget.forView(instancesButton, "实例管理", "保存当前网页状态为实例，或加载已保存的实例。\n实例会保存服务器根目录和当前页面路径，便于快速切换不同的网页项目。\n对于文件夹模式，保存实例可选择仅保存路径或复制全部文件至私有目录。")
+                        .outerCircleColorInt(Color.parseColor("#444444"))
+                        .targetCircleColorInt(Color.parseColor("#DDDDDD"))
+                        .titleTextSize(18)
+                        .descriptionTextSize(14)
+                        .textColorInt(Color.WHITE)
+                        .cancelable(false)
+                        .tintTarget(true),
                     TapTarget.forView(urlEditText, "地址栏与启动参数", "这里会显示当前页面的地址，您也可以在这里直接输入自定义的参数或新的页面路径。")
                         .outerCircleColorInt(Color.parseColor("#444444"))
                         .targetCircleColorInt(Color.parseColor("#888888"))
@@ -1530,7 +1549,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         .descriptionTextSize(14)
                         .textColorInt(Color.WHITE)
                         .cancelable(false)
-                        .tintTarget(false),
+                        .tintTarget(false)
                 )
                 .listener(object : TapTargetSequence.Listener {
                     override fun onSequenceFinish() {
@@ -1665,6 +1684,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             cleanupUnzippedDir()
         }
         updateSelectModeIcon()
+        isCurrentInstanceSaved = false
+        updateDeleteAndSaveButtonsState()
         onComplete?.invoke()
     }
 
@@ -1792,6 +1813,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         instancesRecyclerView.adapter = instanceAdapter
 
         saveInstanceButton.setOnClickListener {
+            if (!saveInstanceButton.isEnabled) {
+                Toast.makeText(this, "当前正在运行已保存的实例时，不可重复保存", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (isSaving) {
                 Toast.makeText(this, "正在保存中，请稍候", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
@@ -1815,18 +1840,42 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // 更新顶部当前实例名称
     private fun updateCurrentInstanceDisplay() {
-        val currentName = if (currentInstanceId != null) {
-            InstanceManager.getInstanceById(currentInstanceId!!)?.name ?: "无"
+        val displayText = if (isCurrentInstanceSaved) {
+            val currentName = currentInstanceId?.let { InstanceManager.getInstanceById(it)?.name } ?: "无"
+            "当前实例：$currentName"
         } else {
-            "无"
+            val folderName = when {
+                isZipMode && currentInstanceRootDir != null -> currentInstanceRootDir!!.name
+                rootUri != null -> getFolderNameFromUri(rootUri!!)
+                else -> "未知"
+            }
+            "当前实例：（临时）$folderName"
         }
-        currentInstanceText.text = "当前实例：$currentName"
+        currentInstanceText.text = displayText
+    }
+
+    private fun getFolderNameFromUri(uri: Uri): String {
+        return try {
+            val doc = DocumentFile.fromTreeUri(this, uri)
+            doc?.name ?: "外部文件夹"
+        } catch (e: Exception) {
+            "外部文件夹"
+        }
     }
 
     // 显示保存实例对话框
     private fun showSaveInstanceDialog() {
         val currentUrl = getCurrentRelativeUrl()
-        val defaultName = generateDefaultInstanceName()
+        val defaultName = if (isCurrentInstanceSaved) {
+            generateDefaultInstanceName()  // 保留原逻辑（备用）
+        } else {
+            // 临时模式，使用文件夹名作为默认名称
+            when {
+                isZipMode && currentInstanceRootDir != null -> currentInstanceRootDir!!.name
+                rootUri != null -> getFolderNameFromUri(rootUri!!)
+                else -> generateDefaultInstanceName()
+            }
+        }
 
         val inputEditText = EditText(this).apply {
             setText(defaultName)
@@ -2017,29 +2066,35 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
         }
         hideInstancesLayer()
+        isCurrentInstanceSaved = true
+        updateDeleteAndSaveButtonsState()   // 新增方法，控制按钮启用/禁用
     }
     private fun saveCopyInstanceWithProgress(name: String, savedUrl: String) {
-        // 创建进度对话框
-        copyProgressDialog = ProgressDialog(this).apply {
-            setTitle("正在复制文件")
-            setMessage("准备复制...")
-            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(true)
-            setButton(ProgressDialog.BUTTON_NEGATIVE, "取消") { _, _ ->
+        val dialogView = layoutInflater.inflate(R.layout.dialog_copy_progress, null)
+        val progressMessage = dialogView.findViewById<TextView>(R.id.progressMessage)
+        val progressBar = dialogView.findViewById<ProgressBar>(R.id.progressBar)
+        val progressCountText = dialogView.findViewById<TextView>(R.id.progressCountText)
+
+        val alertDialog = AlertDialog.Builder(this)
+            .setTitle("正在复制文件")
+            .setView(dialogView)
+            .setNegativeButton("取消") { _, _ ->
                 isCopyCancelled = true
                 copyJob?.cancel()
             }
-            setOnCancelListener {
-                isCopyCancelled = true
-                copyJob?.cancel()
-            }
-            show()
+            .setCancelable(true)
+            .create()
+
+        alertDialog.setOnCancelListener {
+            isCopyCancelled = true
+            copyJob?.cancel()
         }
+
+        alertDialog.show()
 
         isCopyCancelled = false
         isSaving = true
 
-        // 启动复制任务
         copyJob = GlobalScope.launch(Dispatchers.Main) {
             InstanceManager.saveCopyInstance(
                 name = name,
@@ -2047,12 +2102,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 rootUri = rootUri!!,
                 context = this@MainActivity,
                 onProgress = { fileName ->
-                    // 更新进度对话框
-                    copyProgressDialog?.setMessage("正在复制: $fileName")
+                    // 仅显示当前文件名
+                    progressMessage.text = "正在复制: $fileName"
+                },
+                onCountUpdate = { copied, total ->
+                    // 进度条直接反映文件数
+                    progressBar.max = total
+                    progressBar.progress = copied
+                    progressCountText.text = "$copied / $total"
                 },
                 onComplete = { instance ->
-                    copyProgressDialog?.dismiss()
-                    copyProgressDialog = null
+                    alertDialog.dismiss()
                     isSaving = false
                     copyJob = null
 
@@ -2060,7 +2120,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
                         refreshInstanceList()
                         hideInstancesLayer()
-                        // 自动加载新实例
                         loadInstance(instance)
                     } else {
                         if (isCopyCancelled) {
@@ -2070,7 +2129,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                                 .setTitle("保存失败")
                                 .setMessage("复制文件时发生错误，请重试或选择仅保存路径")
                                 .setPositiveButton("重试") { _, _ ->
-                                    // 重新弹出保存对话框
                                     showSaveInstanceDialog()
                                 }
                                 .setNegativeButton("取消", null)
@@ -2090,7 +2148,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer?.stop()
         localWebServer = null
         isServerStarted = false
-        // 不清空 currentServerRoot、rootUri、isZipMode 等，留给调用方处理
+        isCurrentInstanceSaved = false
+        updateDeleteAndSaveButtonsState()
     }
 
     private fun handleReferenceAuthFailure(instance: Instance) {
@@ -2137,7 +2196,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val bgColor = if (isNightMode) Color.parseColor("#FF333333") else Color.WHITE
         val titleBarColor = if (isNightMode) Color.BLACK else Color.parseColor("#F5F5F5")
         val textColor = if (isNightMode) Color.WHITE else Color.BLACK
-        val iconColor = if (isNightMode) Color.WHITE else Color.BLACK
+        val iconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
 
         dialogView.setBackgroundColor(bgColor)
         titleBar.setBackgroundColor(titleBarColor)
@@ -2247,5 +2306,19 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             // "png", "jpg" -> ImageFileOpenStrategy(this)
             else -> null
         }
+    }
+
+    private fun updateDeleteAndSaveButtonsState() {
+        if (!::saveInstanceButton.isInitialized) return
+        val canSaveOrDelete = isServerStarted && isCurrentInstanceSaved
+        saveInstanceButton.isEnabled = !canSaveOrDelete   // 注意：保存按钮在已保存实例时应禁用，所以取反
+        // 同时更新保存按钮的图标颜色（立即生效）
+        val normalIconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
+        val disabledColor = if (isNightMode) Color.DKGRAY else Color.LTGRAY
+        val iconColor = if (saveInstanceButton.isEnabled) normalIconColor else disabledColor
+        saveInstanceButton.drawable?.setColorFilter(PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN))
+
+        // 更新实例列表中当前项的删除按钮
+        instanceAdapter.setCurrentInstanceId(currentInstanceId, canSaveOrDelete) // 注意：canSaveOrDelete 为 true 时删除按钮应禁用
     }
 }

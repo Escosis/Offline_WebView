@@ -39,7 +39,7 @@ class FileBrowserAdapter(
             R.drawable.baseline_insert_drive_file_24
         }
         holder.icon.setImageResource(iconRes)
-        val iconColor = if (nightMode) Color.WHITE else Color.BLACK
+        val iconColor = if (nightMode) Color.WHITE else Color.DKGRAY
         holder.icon.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
 
         holder.itemView.setOnClickListener { onItemClick(file) }
