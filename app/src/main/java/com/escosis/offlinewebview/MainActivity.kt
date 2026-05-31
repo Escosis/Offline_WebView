@@ -1847,9 +1847,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             val folderName = when {
                 isZipMode && currentInstanceRootDir != null -> currentInstanceRootDir!!.name
                 rootUri != null -> getFolderNameFromUri(rootUri!!)
-                else -> "未知"
+                else -> "无"
             }
-            "当前实例：（临时）$folderName"
+            if (folderName == "无") "当前实例：无" else "当前实例：（临时）$folderName"
         }
         currentInstanceText.text = displayText
     }
