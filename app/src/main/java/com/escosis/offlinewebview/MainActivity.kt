@@ -94,6 +94,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var currentServerRoot: Any? = null      // 当前服务器根目录（Uri 或 File）
     private var currentInstanceRootDir: File? = null // 当前实例的根目录（用于 ZIP/复制模式）
 
+    // 改动：新增变量，保存当前 ZIP 解压模式下的原始 ZIP 文件名（不含扩展名）
+    private var currentZipFileName: String? = null
+
     // ==================== 导航状态 ====================
     private var canGoBack = false
     private var canGoForward = false
@@ -446,7 +449,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (!instancesRoot.exists()) {
             instancesRoot.mkdirs()
         }
-        unzippedDir = File(instancesRoot, "temp_www")
+        unzippedDir = File(instancesRoot, ".ephemera")
         if (!unzippedDir.exists()) {
             unzippedDir.mkdirs()
         }
@@ -739,6 +742,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer = null
         isServerStarted = false
         isCurrentInstanceSaved = false
+        // 改动：重置 ZIP 临时文件名
+        currentZipFileName = null
         updateDeleteAndSaveButtonsState()
     }
 
@@ -753,6 +758,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         currentServerRoot = null
         rootUri = null
         currentInstanceRootDir = null
+        // 改动：重置 ZIP 临时文件名
+        currentZipFileName = null
         geckoSession.loadUri("about:blank")
         geckoSession.purgeHistory()
         updateUIAfterDirSelected()
@@ -869,6 +876,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     throw lastException ?: Exception("所有编码尝试均失败")
                 }
 
+                // 改动：获取 ZIP 文件名（不含扩展名）并保存
+                val zipFileName = DocumentFile.fromSingleUri(this@MainActivity, zipUri)?.name ?: "ZIP文件"
+                val displayName = zipFileName.replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
+                currentZipFileName = displayName
+                log("ZIP 文件名: $displayName")
+
                 runOnUiThread {
                     progressDialog.dismiss()
                     startServerFromFile(unzippedDir)
@@ -877,7 +890,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 log("解压失败: ${e.message}")
                 runOnUiThread {
                     progressDialog.dismiss()
-                    Toast.makeText(this, "解压失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "解压失败: ${e.message}", Toast.LENGTH_LONG).show()
                     cleanupUnzippedDir()
                 }
             }
@@ -1373,13 +1386,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateCurrentInstanceDisplay()
     }
 
+    // 改动：临时 ZIP 模式下显示 ZIP 文件名（而非文件夹名 temp_www）
     private fun updateCurrentInstanceDisplay() {
         val displayText = if (isCurrentInstanceSaved) {
             val currentName = currentInstanceId?.let { InstanceManager.getInstanceById(it)?.name } ?: "无"
             "当前实例：$currentName"
         } else {
             val folderName = when {
-                isZipMode && currentInstanceRootDir != null -> currentInstanceRootDir!!.name
+                isZipMode && currentInstanceRootDir != null -> {
+                    // 优先显示 ZIP 原始文件名，若为空则显示目录名（兼容）
+                    currentZipFileName ?: currentInstanceRootDir!!.name
+                }
                 rootUri != null -> getFolderNameFromUri(rootUri!!)
                 else -> "无"
             }
@@ -1403,7 +1420,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             generateDefaultInstanceName()
         } else {
             when {
-                isZipMode && currentInstanceRootDir != null -> currentInstanceRootDir!!.name
+                isZipMode && currentInstanceRootDir != null -> {
+                    // 临时 ZIP 模式：优先使用 ZIP 文件名，否则使用目录名
+                    currentZipFileName ?: currentInstanceRootDir!!.name
+                }
                 rootUri != null -> getFolderNameFromUri(rootUri!!)
                 else -> generateDefaultInstanceName()
             }
@@ -1450,8 +1470,15 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (isSaving) return
         isSaving = true
 
+        if (name.equals(".ephemera", ignoreCase = true)) {
+            Toast.makeText(this, "实例名称与临时解压目录相同，请使用其他名称", Toast.LENGTH_SHORT).show()
+            isSaving = false
+            showSaveInstanceDialog()  // 重新弹出对话框让用户修改
+            return
+        }
+
         if (InstanceManager.isNameExists(name)) {
-            Toast.makeText(this, "实例名称已存在，请重新输入", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "实例名称已存在，请使用其他名称", Toast.LENGTH_SHORT).show()
             isSaving = false
             showSaveInstanceDialog()
             return
@@ -1721,7 +1748,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val textColor = if (isNightMode) Color.WHITE else Color.BLACK
         val iconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
 
-        dialogView.setBackgroundColor(bgColor)
+        // 窗口背景直接使用 bgColor（不透明），dialogView 背景设为透明避免叠加
+        dialogView.setBackgroundColor(Color.TRANSPARENT)
         titleBar.setBackgroundColor(titleBarColor)
         pathText.setTextColor(textColor)
         backButton.drawable?.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
@@ -1789,22 +1817,15 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             .create()
         dialog.show()
 
-        dialogView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
-            override fun onGlobalLayout() {
-                dialogView.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                val maxHeight = (resources.displayMetrics.heightPixels * 0.8).toInt()
-                if (dialogView.height > maxHeight) {
-                    val params = dialogView.layoutParams
-                    params.height = maxHeight
-                    dialogView.layoutParams = params
-                }
-            }
-        })
+        // 设置窗口宽高均为屏幕的80%
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        val dialogWidth = (screenWidth * 0.9).toInt()
+        val dialogHeight = (screenHeight * 0.8).toInt()
+        dialog.window?.setLayout(dialogWidth, dialogHeight)
 
-        dialog.window?.setLayout(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
+        // 设置窗口背景色（不透明，与 bgColor 一致）
+        dialog.window?.setBackgroundDrawable(ColorDrawable(bgColor))
 
         currentFileBrowserDialog = dialog
     }
