@@ -14,8 +14,8 @@ android {
         applicationId = "com.escosis.offlinewebview"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.5.1"
+        versionCode = 17
+        versionName = "1.5.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
