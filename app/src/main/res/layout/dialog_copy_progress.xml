@@ -27,7 +27,7 @@
         android:id="@+id/progressCountText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="0 / 0"
+        android:text="- / -"
         android:textSize="12sp"
         android:layout_marginTop="8dp"
         android:layout_gravity="end" />

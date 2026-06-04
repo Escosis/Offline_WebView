@@ -184,9 +184,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
                 rootUri = uri
+                isCurrentInstanceSaved = false
                 startServer()
-                updateUIAfterDirSelected()
-                loadUrl("http://localhost:8080/")
                 Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
             } else {
                 log("未选择文件夹")
@@ -729,13 +728,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isServerStarted = true
             isZipMode = false
             currentServerRoot = rootUri
-            isCurrentInstanceSaved = false
             updateDeleteAndSaveButtonsState()
             geckoSession.purgeHistory()
             log("服务器启动成功，端口 8080")
             runOnUiThread {
                 updateUIAfterDirSelected()
-                loadUrl("http://localhost:8080/")
+                if(isCurrentInstanceSaved == false) loadUrl("http://localhost:8080/")
                 Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
             }
             hideInstancesLayer()
@@ -769,13 +767,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             isZipMode = true
             currentServerRoot = rootFile
             currentInstanceRootDir = rootFile
-            isCurrentInstanceSaved = false
             updateDeleteAndSaveButtonsState()
             geckoSession.purgeHistory()
             log("服务器已启动，根目录: ${rootFile.absolutePath}")
             runOnUiThread {
                 updateUIAfterDirSelected()
-                loadUrl("http://localhost:8080/")
+                if(isCurrentInstanceSaved == false) loadUrl("http://localhost:8080/")
             }
             hideInstancesLayer()
         } catch (e: Exception) {
@@ -888,7 +885,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             setCancelable(false)
             show()
         }
-
+        hideInstancesLayer()
         Thread {
             var zipStream: ZipArchiveInputStream? = null
             try {
@@ -948,6 +945,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
                 runOnUiThread {
                     progressDialog.dismiss()
+                    isCurrentInstanceSaved = false
                     startServerFromFile(unzippedDir)
                 }
             } catch (e: Exception) {
@@ -1005,12 +1003,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     }
 
     private fun updateSelectModeIcon() {
-        val iconRes = when (currentSelectMode) {
-            SelectMode.FOLDER -> R.drawable.baseline_folder_open_24
-            SelectMode.ZIP -> R.drawable.baseline_folder_zip_24
+        val iconRes = if (isCurrentInstanceSaved) {
+            // 已保存实例统一显示普通文件夹图标
+            R.drawable.baseline_folder_24
+        } else {
+            when (currentSelectMode) {
+                SelectMode.FOLDER -> R.drawable.baseline_folder_open_24
+                SelectMode.ZIP -> R.drawable.baseline_folder_zip_24
+            }
         }
         selectDirButton.setImageResource(iconRes)
-        applyNightMode()
+        applyNightMode()  // 确保图标颜色适应夜间模式
     }
 
     private fun updateUIForCurrentMode() {
@@ -1453,6 +1456,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val instances = InstanceManager.getAllInstances()
         instanceAdapter.updateData(instances)
         updateCurrentInstanceDisplay()
+        updateDeleteAndSaveButtonsState()
     }
 
     private fun confirmClearData(instance: Instance) {
@@ -1619,15 +1623,19 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     // 更新当前状态，复用已有的 contextId 和 session
                     currentInstanceId = instance.id
                     currentContextId = instance.id
-                    isCurrentInstanceSaved = true
                     isZipMode = true
+                    isCurrentInstanceSaved = true
                     currentInstanceRootDir = File(instance.storageDir)
                     startServerFromFile(currentInstanceRootDir!!)
+                    val url = if (savedUrl.isNotEmpty()) "http://localhost:8080/$savedUrl" else "http://localhost:8080/"
+                    loadUrl(url)
+                    updateSelectModeIcon()
                     refreshInstanceList()
                     hideInstancesLayer()
                     Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
                 } else {
                     // 保存失败，恢复原来的临时服务器
+                    isCurrentInstanceSaved = false
                     startServerFromFile(currentUnzippedDir)
                     AlertDialog.Builder(this)
                         .setTitle("保存失败")
@@ -1647,14 +1655,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             // 复用 contextId
             currentInstanceId = instance.id
             currentContextId = instance.id
+            isCurrentInstanceSaved = true
             // reference 模式下保持 isZipMode = false，rootUri 不变
             startServer()
             val url = if (savedUrl.isNotEmpty()) "http://localhost:8080/$savedUrl" else "http://localhost:8080/"
             loadUrl(url)
-            isCurrentInstanceSaved = true
+
+            updateSelectModeIcon()
             refreshInstanceList()
-            updateCurrentInstanceDisplay()
-            updateDeleteAndSaveButtonsState()
             hideInstancesLayer()
             Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
         } else {
@@ -1714,12 +1722,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         // 复用 contextId
                         currentInstanceId = instance.id
                         currentContextId = instance.id
-                        isCurrentInstanceSaved = true
                         isZipMode = true
+                        isCurrentInstanceSaved = true
                         currentInstanceRootDir = File(instance.storageDir)
                         startServerFromFile(currentInstanceRootDir!!)
                         val url = if (savedUrl.isNotEmpty()) "http://localhost:8080/$savedUrl" else "http://localhost:8080/"
                         loadUrl(url)
+                        updateSelectModeIcon()
                         refreshInstanceList()
                         hideInstancesLayer()
                         Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
@@ -1773,7 +1782,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     currentServerRoot = uri
                     isServerStarted = true
                     currentInstanceId = instance.id
-                    updateCurrentInstanceDisplay()
+                    refreshInstanceList()
                     val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
                     loadUrl(url)
                     selectFileButton.setOnClickListener { openFilePickerInRoot() }
@@ -1798,12 +1807,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         .show()
                     return
                 }
+                isCurrentInstanceSaved = true
                 startServerFromFile(dir)
                 isZipMode = true
                 currentServerRoot = dir
                 isServerStarted = true
                 currentInstanceId = instance.id
-                updateCurrentInstanceDisplay()
+                refreshInstanceList()
                 val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
                 loadUrl(url)
                 selectFileButton.setOnClickListener { showFilePickerForPrivateDir() }
