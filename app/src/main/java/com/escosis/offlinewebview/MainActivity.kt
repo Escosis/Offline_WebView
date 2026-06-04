@@ -84,6 +84,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private lateinit var geckoRuntime: GeckoRuntime
     private var localWebServer: LocalWebServer? = null
     private var isServerStarted = false
+    private var currentContextId: String? = null
+    private var isSwitchingInstance = false
 
     // ==================== 服务器模式与根目录 ====================
     enum class SelectMode { FOLDER, ZIP }   // FOLDER: 外部文件夹模式, ZIP: 解压模式
@@ -324,6 +326,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         initInstancesUI()           // 实例管理界面
         applyNightMode()            // 应用夜间模式
         updateUIAfterDirSelected()  // 更新 UI 状态（禁用文件选择等）
+        updateDeleteAndSaveButtonsState()
         setupDebugPanel()
         setupMenuButton()
 
@@ -478,58 +481,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private fun setupGeckoView() {
         geckoView = findViewById(R.id.geckoview)
         geckoRuntime = GeckoRuntime.create(this)
-        geckoSession = GeckoSession()
-        geckoSession.open(geckoRuntime)
-        geckoView.setSession(geckoSession)
-        geckoSession.settings.setAllowJavascript(true)
-
-        geckoSession.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
-                this@MainActivity.canGoBack = canGoBack
-                runOnUiThread { updateNavigationButtonsState() }
-            }
-
-            override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
-                this@MainActivity.canGoForward = canGoForward
-                runOnUiThread { updateNavigationButtonsState() }
-            }
-
-            override fun onLoadRequest(
-                session: GeckoSession,
-                request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<AllowOrDeny>? {
-                val uri = request.uri
-                log("导航请求: $uri")
-                if (uri.startsWith("error://")) {
-                    log("拦截错误页面: $uri")
-                    runOnUiThread {
-                        showErrorView(uri)
-                    }
-                    return GeckoResult.fromValue(AllowOrDeny.DENY)
-                }
-                if (uri.startsWith("http://localhost:8080/")) {
-                    lastRequestedUrl = uri
-                }
-                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
-            }
-
-            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
-                log("新窗口请求: $uri")
-                return null
-            }
-        }
-
-        geckoSession.progressDelegate = object : GeckoSession.ProgressDelegate {
-            override fun onPageStart(session: GeckoSession, url: String) {
-                currentSessionUrl = url
-                runOnUiThread {
-                    updateUrlBar(url)
-                    if (errorView.visibility == View.VISIBLE) {
-                        hideErrorView()
-                    }
-                }
-            }
-        }
+        val tempSession = GeckoSession()
+        tempSession.open(geckoRuntime)
+        geckoView.setSession(tempSession)
+        geckoSession = tempSession
 
         urlEditText.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO || event?.keyCode == KeyEvent.KEYCODE_ENTER) {
@@ -564,6 +519,74 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
             resetHideTimer()
         }
+    }
+
+    private fun createAndAttachSession(contextId: String): GeckoSession {
+        // 关闭旧 Session（如果有）
+        if (::geckoSession.isInitialized && geckoSession.isOpen) {
+            geckoSession.close()
+        }
+
+        val settings = GeckoSessionSettings.Builder()
+            .contextId(contextId)
+            .build()
+        val newSession = GeckoSession(settings)
+        newSession.open(geckoRuntime)
+        newSession.settings.setAllowJavascript(true)   // 原来在 setupGeckoView 中设置，现在移到此处
+
+        // 设置 NavigationDelegate 和 ProgressDelegate
+        newSession.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+                this@MainActivity.canGoBack = canGoBack
+                runOnUiThread { updateNavigationButtonsState() }
+            }
+
+            override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
+                this@MainActivity.canGoForward = canGoForward
+                runOnUiThread { updateNavigationButtonsState() }
+            }
+
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny>? {
+                val uri = request.uri
+                log("导航请求: $uri")
+                if (uri.startsWith("error://")) {
+                    log("拦截错误页面: $uri")
+                    runOnUiThread {
+                        showErrorView(uri)
+                    }
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                if (uri.startsWith("http://localhost:8080/")) {
+                    lastRequestedUrl = uri
+                }
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+            }
+
+            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
+                log("新窗口请求: $uri")
+                return null
+            }
+        }
+        newSession.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                currentSessionUrl = url
+                runOnUiThread {
+                    updateUrlBar(url)
+                    if (errorView.visibility == View.VISIBLE) {
+                        hideErrorView()
+                    }
+                }
+            }
+        }
+
+        // 更新全局变量并绑定到 GeckoView
+        geckoSession = newSession
+        geckoView.setSession(geckoSession)
+
+        return newSession
     }
 
     private fun setupListeners() {
@@ -676,12 +699,29 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
+    private fun clearDataForContextId(contextId: String) {
+        try {
+            geckoRuntime.storageController.clearDataForSessionContext(contextId)
+            log("已清除 contextId=$contextId 的所有网站数据")
+        } catch (e: Exception) {
+            log("清除数据失败: ${e.message}")
+        }
+    }
+
     // ==================== 服务器操作 ====================
     /**
      * 基于外部文件夹 Uri 启动服务器（FOLDER 模式）
      */
     private fun startServer() {
         if (rootUri == null) return
+
+        if (currentContextId == null) {
+            currentContextId = if (currentInstanceId != null) currentInstanceId else UUID.randomUUID().toString()
+        }
+        if (!::geckoSession.isInitialized || geckoSession.isOpen) {
+            createAndAttachSession(currentContextId!!)
+        }
+
         localWebServer?.stop()
         localWebServer = LocalWebServer(8080, rootUri = rootUri, context = this, debugLogger = this)
         try {
@@ -698,6 +738,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 loadUrl("http://localhost:8080/")
                 Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
             }
+            hideInstancesLayer()
         } catch (e: Exception) {
             log("服务器启动失败: ${e.message}")
             isServerStarted = false
@@ -712,6 +753,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             log("根目录不存在: ${rootFile.absolutePath}")
             return
         }
+
+        if (currentContextId == null) {
+            currentContextId = if (currentInstanceId != null) currentInstanceId else UUID.randomUUID().toString()
+        }
+        if (!::geckoSession.isInitialized || geckoSession.isOpen) {
+            createAndAttachSession(currentContextId!!)
+        }
+
         localWebServer?.stop()
         localWebServer = LocalWebServer(8080, rootFile = rootFile, context = this, debugLogger = this)
         try {
@@ -728,6 +777,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 updateUIAfterDirSelected()
                 loadUrl("http://localhost:8080/")
             }
+            hideInstancesLayer()
         } catch (e: Exception) {
             log("服务器启动失败: ${e.message}")
             isServerStarted = false
@@ -751,6 +801,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
      * 停止服务器并重置所有状态（清除模式、根目录等）
      */
     private fun stopServerAndReset(onComplete: (() -> Unit)? = null) {
+        hideInstancesLayer()
+        if (::geckoSession.isInitialized) {
+            geckoSession.close()
+            if (currentContextId != null && currentInstanceId == null) {
+                clearDataForContextId(currentContextId!!)
+            }
+            val tempSession = GeckoSession()
+            tempSession.open(geckoRuntime)
+            geckoView.setSession(tempSession)
+            geckoSession = tempSession
+        }
+
         localWebServer?.stop()
         localWebServer = null
         isServerStarted = false
@@ -758,8 +820,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         currentServerRoot = null
         rootUri = null
         currentInstanceRootDir = null
-        // 改动：重置 ZIP 临时文件名
         currentZipFileName = null
+        currentInstanceId = null
+        currentContextId = null
+        isCurrentInstanceSaved = false
         geckoSession.loadUri("about:blank")
         geckoSession.purgeHistory()
         updateUIAfterDirSelected()
@@ -1331,6 +1395,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     .setTitle("删除实例")
                     .setMessage("确定要删除实例“${instance.name}”吗？")
                     .setPositiveButton("删除") { _, _ ->
+                        clearDataForContextId(instance.id)
                         val deleted = InstanceManager.deleteInstance(instance.id, deleteFiles = false)
                         if (deleted) {
                             refreshInstanceList()
@@ -1341,14 +1406,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     }
                     .setNegativeButton("取消", null)
                     .show()
+            },
+            onClearDataClick = { instance ->
+                confirmClearData(instance)   // 新增的清除数据确认方法
             }
         )
+
         instancesRecyclerView.layoutManager = LinearLayoutManager(this)
         instancesRecyclerView.adapter = instanceAdapter
 
         saveInstanceButton.setOnClickListener {
             if (!saveInstanceButton.isEnabled) {
-                Toast.makeText(this, "当前正在运行已保存的实例时，不可重复保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "当前状态不可保存", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             if (isSaving) {
@@ -1386,7 +1455,26 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateCurrentInstanceDisplay()
     }
 
-    // 改动：临时 ZIP 模式下显示 ZIP 文件名（而非文件夹名 temp_www）
+    private fun confirmClearData(instance: Instance) {
+        AlertDialog.Builder(this)
+            .setTitle("清除数据")
+            .setMessage("确定要清除实例“${instance.name}”的所有网站数据吗？此操作不可撤销。")
+            .setPositiveButton("清除") { _, _ ->
+                if (currentInstanceId == instance.id && isServerStarted) {
+                    // 当前正在运行该实例，需要停止并重新加载以应用清除效果
+                    stopServerAndReset {
+                        clearDataForContextId(instance.id)
+                        loadInstance(instance)
+                    }
+                } else {
+                    clearDataForContextId(instance.id)
+                    Toast.makeText(this, "已清除实例“${instance.name}”的数据", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun updateCurrentInstanceDisplay() {
         val displayText = if (isCurrentInstanceSaved) {
             val currentName = currentInstanceId?.let { InstanceManager.getInstanceById(it)?.name } ?: "无"
@@ -1470,6 +1558,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (isSaving) return
         isSaving = true
 
+        if (currentContextId != null && InstanceManager.getInstanceById(currentContextId!!) != null) {
+            Toast.makeText(this, "当前环境已保存为实例，请勿重复保存", Toast.LENGTH_SHORT).show()
+            isSaving = false
+            return
+        }
+
         if (name.equals(".ephemera", ignoreCase = true)) {
             Toast.makeText(this, "实例名称与临时解压目录相同，请使用其他名称", Toast.LENGTH_SHORT).show()
             isSaving = false
@@ -1484,12 +1578,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             return
         }
 
+        val instanceId = currentContextId ?: UUID.randomUUID().toString()
+
         when {
             isZipMode -> {
-                saveZipInstance(name, savedUrl)
+                saveZipInstance(name, savedUrl, instanceId)
             }
             rootUri != null -> {
-                showSaveModeDialog(name, savedUrl)
+                showSaveModeDialog(name, savedUrl, instanceId)
             }
             else -> {
                 Toast.makeText(this, "无法确定当前服务器模式", Toast.LENGTH_SHORT).show()
@@ -1498,38 +1594,40 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
-    private fun showSaveModeDialog(name: String, savedUrl: String) {
+    private fun showSaveModeDialog(name: String, savedUrl: String, instanceId: String) {
         val options = arrayOf("仅保存路径（引用原文件夹）", "复制全部文件（占用存储空间）")
         AlertDialog.Builder(this)
             .setTitle("选择保存方式")
             .setItems(options) { _, which ->
                 when (which) {
-                    0 -> saveReferenceInstance(name, savedUrl)
-                    1 -> saveCopyInstanceWithProgress(name, savedUrl)
+                    0 -> saveReferenceInstance(name, savedUrl, instanceId)
+                    1 -> saveCopyInstanceWithProgress(name, savedUrl, instanceId)
                 }
             }
             .setOnCancelListener { isSaving = false }
             .show()
     }
 
-    private fun saveZipInstance(name: String, savedUrl: String) {
+    private fun saveZipInstance(name: String, savedUrl: String, instanceId: String) {
         val currentUnzippedDir = unzippedDir
         stopServerOnly()
-
         Thread {
-            val instance = InstanceManager.saveZipInstance(name, savedUrl, currentUnzippedDir)
+            val instance = InstanceManager.saveZipInstance(name, savedUrl, currentUnzippedDir, instanceId)
             runOnUiThread {
                 isSaving = false
                 if (instance != null) {
-                    isZipMode = false
-                    currentServerRoot = null
-                    rootUri = null
-                    updateUIAfterDirSelected()
-                    Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
+                    // 更新当前状态，复用已有的 contextId 和 session
+                    currentInstanceId = instance.id
+                    currentContextId = instance.id
+                    isCurrentInstanceSaved = true
+                    isZipMode = true
+                    currentInstanceRootDir = File(instance.storageDir)
+                    startServerFromFile(currentInstanceRootDir!!)
                     refreshInstanceList()
                     hideInstancesLayer()
-                    loadInstance(instance)
+                    Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
                 } else {
+                    // 保存失败，恢复原来的临时服务器
                     startServerFromFile(currentUnzippedDir)
                     AlertDialog.Builder(this)
                         .setTitle("保存失败")
@@ -1542,20 +1640,32 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }.start()
     }
 
-    private fun saveReferenceInstance(name: String, savedUrl: String) {
-        val instance = InstanceManager.saveReferenceInstance(name, savedUrl, rootUri!!)
+    private fun saveReferenceInstance(name: String, savedUrl: String, instanceId: String) {
+        val instance = InstanceManager.saveReferenceInstance(name, savedUrl, rootUri!!, instanceId)
         isSaving = false
         if (instance != null) {
-            Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
+            // 复用 contextId
+            currentInstanceId = instance.id
+            currentContextId = instance.id
+            // reference 模式下保持 isZipMode = false，rootUri 不变
+            startServer()
+            val url = if (savedUrl.isNotEmpty()) "http://localhost:8080/$savedUrl" else "http://localhost:8080/"
+            loadUrl(url)
+            isCurrentInstanceSaved = true
             refreshInstanceList()
+            updateCurrentInstanceDisplay()
+            updateDeleteAndSaveButtonsState()
             hideInstancesLayer()
-            loadInstance(instance)
+            Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "保存失败（可能名称重复）", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun saveCopyInstanceWithProgress(name: String, savedUrl: String) {
+    private fun saveCopyInstanceWithProgress(name: String, savedUrl: String, instanceId: String) {
+        // 停止当前服务器，但不清除数据
+        stopServerOnly()
+
         val dialogView = layoutInflater.inflate(R.layout.dialog_copy_progress, null)
         val progressMessage = dialogView.findViewById<TextView>(R.id.progressMessage)
         val progressBar = dialogView.findViewById<ProgressBar>(R.id.progressBar)
@@ -1601,10 +1711,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     copyJob = null
 
                     if (instance != null && !isCopyCancelled) {
-                        Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
+                        // 复用 contextId
+                        currentInstanceId = instance.id
+                        currentContextId = instance.id
+                        isCurrentInstanceSaved = true
+                        isZipMode = true
+                        currentInstanceRootDir = File(instance.storageDir)
+                        startServerFromFile(currentInstanceRootDir!!)
+                        val url = if (savedUrl.isNotEmpty()) "http://localhost:8080/$savedUrl" else "http://localhost:8080/"
+                        loadUrl(url)
                         refreshInstanceList()
                         hideInstancesLayer()
-                        loadInstance(instance)
+                        Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
                     } else {
                         if (isCopyCancelled) {
                             Toast.makeText(this@MainActivity, "复制已取消", Toast.LENGTH_SHORT).show()
@@ -1620,14 +1738,30 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         }
                     }
                 },
-                isCancelled = { isCopyCancelled }
+                isCancelled = { isCopyCancelled },
+                instanceId = instanceId
             )
         }
     }
 
     private fun loadInstance(instance: Instance) {
-        stopServerOnly()
+        // 停止当前服务器并清理临时数据
+        if (isServerStarted) {
+            stopServerOnly()
+            if (currentInstanceId == null && currentContextId != null) {
+                clearDataForContextId(currentContextId!!)
+            }
+        }
 
+        // 设置当前实例 ID 和 contextId
+        currentInstanceId = instance.id
+        currentContextId = instance.id
+        isCurrentInstanceSaved = true
+
+        // 创建新 Session
+        createAndAttachSession(currentContextId!!)
+
+        // 根据实例类型启动服务器
         when (instance.type) {
             "reference" -> {
                 val uri = Uri.parse(instance.sourceUri)
@@ -1708,14 +1842,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     private fun updateDeleteAndSaveButtonsState() {
         if (!::saveInstanceButton.isInitialized) return
-        val canSaveOrDelete = isServerStarted && isCurrentInstanceSaved
-        saveInstanceButton.isEnabled = !canSaveOrDelete
+        saveInstanceButton.isEnabled = isServerStarted && !isCurrentInstanceSaved
         val normalIconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
         val disabledColor = if (isNightMode) Color.DKGRAY else Color.LTGRAY
         val iconColor = if (saveInstanceButton.isEnabled) normalIconColor else disabledColor
         saveInstanceButton.drawable?.setColorFilter(PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN))
-
-        instanceAdapter.setCurrentInstanceId(currentInstanceId, canSaveOrDelete)
+        val canDelete = isServerStarted && isCurrentInstanceSaved
+        instanceAdapter.setCurrentInstanceId(currentInstanceId, canDelete)
     }
 
     // ==================== 内置文件浏览器（ZIP/复制模式用） ====================

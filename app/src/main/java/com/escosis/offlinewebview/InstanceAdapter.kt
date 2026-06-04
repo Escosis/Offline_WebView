@@ -16,7 +16,8 @@ import java.util.*
 class InstanceAdapter(
     private var instances: List<Instance>,
     private val onItemClick: (Instance) -> Unit,
-    private val onDeleteClick: (Instance) -> Unit
+    private val onDeleteClick: (Instance) -> Unit,
+    private val onClearDataClick: (Instance) -> Unit
 ) : RecyclerView.Adapter<InstanceAdapter.ViewHolder>() {
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -59,6 +60,7 @@ class InstanceAdapter(
         // 删除按钮可用性：如果当前是正在运行的实例且不允许删除（isDeleteEnabled = true），则禁用；否则启用
         val deleteEnabled = if (isCurrent) !isDeleteEnabled else true
         holder.deleteButton.isEnabled = deleteEnabled
+        holder.clearDataButton.isEnabled = true
 
         // 根据启用状态和夜间模式设置图标颜色
         val iconColor = if (deleteEnabled) {
@@ -66,12 +68,15 @@ class InstanceAdapter(
         } else {
             if (isNightMode) Color.DKGRAY else Color.LTGRAY
         }
-        holder.deleteButton.drawable?.setColorFilter(
-            PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
-        )
+        holder.deleteButton.drawable?.setColorFilter(PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN))
+        val clearIconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
+        holder.clearDataButton.drawable?.setColorFilter(PorterDuffColorFilter(clearIconColor, PorterDuff.Mode.SRC_IN))
 
         holder.deleteButton.setOnClickListener {
             onDeleteClick(instance)
+        }
+        holder.clearDataButton.setOnClickListener {
+            onClearDataClick(instance)
         }
         holder.itemView.setOnClickListener {
             onItemClick(instance)
@@ -89,5 +94,6 @@ class InstanceAdapter(
         val nameText: TextView = itemView.findViewById(R.id.instanceNameText)
         val timeText: TextView = itemView.findViewById(R.id.instanceTimeText)
         val deleteButton: ImageButton = itemView.findViewById(R.id.deleteInstanceButton)
+        val clearDataButton: ImageButton = itemView.findViewById(R.id.clearDataButton)
     }
 }

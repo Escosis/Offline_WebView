@@ -188,7 +188,7 @@ object InstanceManager {
      * @param unzippedDir 当前解压目录的 File 对象
      * @return 保存成功返回 Instance，失败返回 null
      */
-    fun saveZipInstance(name: String, savedUrl: String, sourceDir: File): Instance? {
+    fun saveZipInstance(name: String, savedUrl: String, sourceDir: File, instanceId: String): Instance? {
         if (isNameExists(name)) return null
         val safeName = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
         val timestamp = System.currentTimeMillis()
@@ -199,6 +199,7 @@ object InstanceManager {
         if (!success) return null
 
         val instance = Instance(
+            id = instanceId,
             name = name,
             type = "zip_move",
             storageDir = targetDir.absolutePath,
@@ -216,20 +217,19 @@ object InstanceManager {
      * @param rootUri 当前服务器的根 Uri
      * @return 成功返回 Instance，失败返回 null
      */
-    fun saveReferenceInstance(name: String, savedUrl: String, rootUri: Uri): Instance? {
+    fun saveReferenceInstance(name: String, savedUrl: String, rootUri: Uri, instanceId: String): Instance? {
         if (isNameExists(name)) return null
-
         val timestamp = System.currentTimeMillis()
         val instance = Instance(
+            id = instanceId,
             name = name,
             type = "reference",
-            storageDir = "", // 引用模式没有本地存储目录
+            storageDir = "",
             sourceUri = rootUri.toString(),
             savedUrl = savedUrl,
             isZipMode = false,
             createdAt = timestamp
         )
-
         return if (addInstance(instance)) instance else null
     }
 
@@ -303,9 +303,10 @@ object InstanceManager {
         rootUri: Uri,
         context: Context,
         onProgress: (String) -> Unit,
-        onCountUpdate: ((Int, Int) -> Unit)? = null,   // 新增参数
+        onCountUpdate: ((Int, Int) -> Unit)? = null,
         onComplete: (Instance?) -> Unit,
-        isCancelled: () -> Boolean
+        isCancelled: () -> Boolean,
+        instanceId: String   // 新增参数
     ) {
         if (isNameExists(name)) {
             onComplete(null)
@@ -319,19 +320,18 @@ object InstanceManager {
 
         GlobalScope.launch(Dispatchers.IO) {
             try {
-                // 创建目标目录
                 if (!targetDir.exists() && !targetDir.mkdirs()) {
                     withContext(Dispatchers.Main) { onComplete(null) }
                     return@launch
                 }
 
-                // 开始复制（内部会统计总数并回调进度）
                 val success = copyUriToDirectory(
                     rootUri, targetDir, context, onProgress, onCountUpdate, isCancelled
                 )
 
                 if (success && !isCancelled()) {
                     val instance = Instance(
+                        id = instanceId,
                         name = name,
                         type = "copy",
                         storageDir = targetDir.absolutePath,

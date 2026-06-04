@@ -14,8 +14,8 @@ android {
         applicationId = "com.escosis.offlinewebview"
         minSdk = 24
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.5.3"
+        versionCode = 19
+        versionName = "1.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -54,7 +54,7 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.getkeepsafe.taptargetview:taptargetview:1.13.3")
-    implementation("org.apache.commons:commons-compress:1.25.0")
+    implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.google.code.gson:gson:2.10.1")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)

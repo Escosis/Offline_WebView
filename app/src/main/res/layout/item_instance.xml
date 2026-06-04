@@ -18,7 +18,6 @@
             android:id="@+id/instanceNameText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="1. 我的网站"
             android:textSize="16sp"
             android:textColor="#333333" />
 
@@ -26,13 +25,19 @@
             android:id="@+id/instanceTimeText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="2024-01-01 12:00"
             android:textSize="12sp"
             android:textColor="#999999"
             android:layout_marginTop="4dp" />
     </LinearLayout>
 
-    <!-- 右侧：删除按钮 -->
+    <ImageButton
+        android:id="@+id/clearDataButton"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:src="@drawable/cookie_remove_24"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="清除数据" />
+
     <ImageButton
         android:id="@+id/deleteInstanceButton"
         android:layout_width="48dp"
