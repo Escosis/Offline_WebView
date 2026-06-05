@@ -789,7 +789,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         localWebServer = null
         isServerStarted = false
         isCurrentInstanceSaved = false
-        // 改动：重置 ZIP 临时文件名
         currentZipFileName = null
         updateDeleteAndSaveButtonsState()
     }
@@ -1671,9 +1670,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     }
 
     private fun saveCopyInstanceWithProgress(name: String, savedUrl: String, instanceId: String) {
-        // 停止当前服务器，但不清除数据
-        stopServerOnly()
-
         val dialogView = layoutInflater.inflate(R.layout.dialog_copy_progress, null)
         val progressMessage = dialogView.findViewById<TextView>(R.id.progressMessage)
         val progressBar = dialogView.findViewById<ProgressBar>(R.id.progressBar)
@@ -1695,6 +1691,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
 
         alertDialog.show()
+        hideInstancesLayer()
 
         isCopyCancelled = false
         isSaving = true
@@ -1719,7 +1716,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     copyJob = null
 
                     if (instance != null && !isCopyCancelled) {
-                        // 复用 contextId
+                        stopServerOnly()
                         currentInstanceId = instance.id
                         currentContextId = instance.id
                         isZipMode = true
@@ -1730,7 +1727,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                         loadUrl(url)
                         updateSelectModeIcon()
                         refreshInstanceList()
-                        hideInstancesLayer()
                         Toast.makeText(this@MainActivity, "保存成功", Toast.LENGTH_SHORT).show()
                     } else {
                         if (isCopyCancelled) {
