@@ -270,6 +270,7 @@ class LocalWebServer(
         val polyfillScript = """
         <script>
         (function() {
+            // 样式注入
             var baseStyle = document.createElement('style');
             baseStyle.textContent = `
                 .custom-select-container {
@@ -326,110 +327,148 @@ class LocalWebServer(
             `;
             document.head.appendChild(baseStyle);
 
+            // 替换单个 select 元素
+            function replaceSelect(select) {
+                if (select.getAttribute('data-replaced') === 'true') return;
+                
+                var origWidth = select.offsetWidth;
+                var origHeight = select.offsetHeight;
+                // 如果元素尚未渲染，延迟重试
+                if (!origWidth || !origHeight) {
+                    setTimeout(function() { replaceSelect(select); }, 50);
+                    return;
+                }
+
+                select.setAttribute('data-replaced', 'true');
+                var computed = getComputedStyle(select);
+
+                // 容器
+                var container = document.createElement('div');
+                container.className = 'custom-select-container';
+                container.style.width = origWidth + 'px';
+                container.style.height = origHeight + 'px';
+                container.style.border = computed.border;
+                container.style.backgroundColor = computed.backgroundColor;
+                container.style.borderRadius = computed.borderRadius;
+
+                // 显示值区域
+                var valueDiv = document.createElement('div');
+                valueDiv.className = 'custom-select-value';
+                valueDiv.style.fontFamily = computed.fontFamily;
+                valueDiv.style.fontSize = computed.fontSize;
+                valueDiv.style.fontWeight = computed.fontWeight;
+                valueDiv.style.lineHeight = computed.lineHeight;
+                valueDiv.style.color = computed.color;
+                valueDiv.style.backgroundColor = computed.backgroundColor;
+
+                var padLeft = parseFloat(computed.paddingLeft) || 0;
+                var padRight = parseFloat(computed.paddingRight) || 0;
+                valueDiv.style.paddingLeft = padLeft + 'px';
+                valueDiv.style.paddingRight = (padRight + 20) + 'px';
+                valueDiv.textContent = select.options[select.selectedIndex]?.text || '请选择';
+
+                // 箭头
+                var arrow = document.createElement('div');
+                arrow.className = 'custom-select-arrow';
+                arrow.textContent = '▼';
+                var fontSizePx = parseFloat(computed.fontSize);
+                arrow.style.fontSize = (fontSizePx * 0.8) + 'px';
+
+                // 选项列表
+                var optionsDiv = document.createElement('div');
+                optionsDiv.className = 'custom-select-options';
+                var optionStyle = select.options.length > 0 ? getComputedStyle(select.options[0]) : null;
+                Array.from(select.options).forEach(function(option, idx) {
+                    var optDiv = document.createElement('div');
+                    optDiv.className = 'custom-select-option';
+                    optDiv.textContent = option.text;
+                    if (optionStyle) {
+                        optDiv.style.fontSize = optionStyle.fontSize;
+                        optDiv.style.fontWeight = optionStyle.fontWeight;
+                        optDiv.style.fontFamily = optionStyle.fontFamily;
+                        optDiv.style.color = optionStyle.color;
+                    } else {
+                        optDiv.style.fontSize = computed.fontSize;
+                        optDiv.style.fontWeight = computed.fontWeight;
+                        optDiv.style.fontFamily = computed.fontFamily;
+                        optDiv.style.color = computed.color;
+                    }
+                    optDiv.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        select.selectedIndex = idx;
+                        valueDiv.textContent = option.text;
+                        var event = new Event('change', { bubbles: true });
+                        select.dispatchEvent(event);
+                        optionsDiv.style.display = 'none';
+                    });
+                    optionsDiv.appendChild(optDiv);
+                });
+
+                container.appendChild(valueDiv);
+                container.appendChild(arrow);
+                container.appendChild(optionsDiv);
+
+                container.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    document.querySelectorAll('.custom-select-options').forEach(function(o) {
+                        if (o !== optionsDiv) o.style.display = 'none';
+                    });
+                    optionsDiv.style.display = optionsDiv.style.display === 'none' ? 'block' : 'none';
+                });
+                document.addEventListener('click', function() {
+                    optionsDiv.style.display = 'none';
+                });
+
+                select.style.display = 'none';
+                select.parentNode.insertBefore(container, select);
+            }
+
+            // 处理所有尚未替换的 select
             function replaceSelects() {
                 var selects = document.querySelectorAll('select:not([data-replaced])');
                 selects.forEach(function(select) {
-                    var origWidth = select.offsetWidth;
-                    var origHeight = select.offsetHeight;
-                    if (!origWidth || !origHeight) return;
-
-                    select.setAttribute('data-replaced', 'true');
-                    var computed = getComputedStyle(select);
-
-                    // 容器
-                    var container = document.createElement('div');
-                    container.className = 'custom-select-container';
-                    container.style.width = origWidth + 'px';
-                    container.style.height = origHeight + 'px';
-                    container.style.border = computed.border;
-                    container.style.backgroundColor = computed.backgroundColor;
-                    container.style.borderRadius = computed.borderRadius;
-
-                    // 显示值区域
-                    var valueDiv = document.createElement('div');
-                    valueDiv.className = 'custom-select-value';
-                    valueDiv.style.fontFamily = computed.fontFamily;
-                    valueDiv.style.fontSize = computed.fontSize;
-                    valueDiv.style.fontWeight = computed.fontWeight;
-                    valueDiv.style.lineHeight = computed.lineHeight;
-                    valueDiv.style.color = computed.color;
-                    valueDiv.style.backgroundColor = computed.backgroundColor;
-
-                    var padLeft = parseFloat(computed.paddingLeft) || 0;
-                    var padRight = parseFloat(computed.paddingRight) || 0;
-                    valueDiv.style.paddingLeft = padLeft + 'px';
-                    valueDiv.style.paddingRight = (padRight + 20) + 'px';
-
-                    valueDiv.textContent = select.options[select.selectedIndex]?.text || '请选择';
-
-                    var arrow = document.createElement('div');
-                    arrow.className = 'custom-select-arrow';
-                    arrow.textContent = '▼';
-                    var fontSizePx = parseFloat(computed.fontSize);
-                    arrow.style.fontSize = (fontSizePx * 0.8) + 'px';
-
-                    var optionsDiv = document.createElement('div');
-                    optionsDiv.className = 'custom-select-options';
-                    var optionStyle = select.options.length > 0 ? getComputedStyle(select.options[0]) : null;
-                    Array.from(select.options).forEach(function(option, idx) {
-                        var optDiv = document.createElement('div');
-                        optDiv.className = 'custom-select-option';
-                        optDiv.textContent = option.text;
-                        if (optionStyle) {
-                            optDiv.style.fontSize = optionStyle.fontSize;
-                            optDiv.style.fontWeight = optionStyle.fontWeight;
-                            optDiv.style.fontFamily = optionStyle.fontFamily;
-                            optDiv.style.color = optionStyle.color;
-                        } else {
-                            optDiv.style.fontSize = computed.fontSize;
-                            optDiv.style.fontWeight = computed.fontWeight;
-                            optDiv.style.fontFamily = computed.fontFamily;
-                            optDiv.style.color = computed.color;
-                        }
-                        optDiv.addEventListener('click', function(e) {
-                            e.stopPropagation();
-                            select.selectedIndex = idx;
-                            valueDiv.textContent = option.text;
-                            var event = new Event('change', { bubbles: true });
-                            select.dispatchEvent(event);
-                            optionsDiv.style.display = 'none';
-                        });
-                        optionsDiv.appendChild(optDiv);
-                    });
-
-                    container.appendChild(valueDiv);
-                    container.appendChild(arrow);
-                    container.appendChild(optionsDiv);
-
-                    container.addEventListener('click', function(e) {
-                        e.stopPropagation();
-                        document.querySelectorAll('.custom-select-options').forEach(function(o) {
-                            if (o !== optionsDiv) o.style.display = 'none';
-                        });
-                        optionsDiv.style.display = optionsDiv.style.display === 'none' ? 'block' : 'none';
-                    });
-                    document.addEventListener('click', function() {
-                        optionsDiv.style.display = 'none';
-                    });
-
-                    select.style.display = 'none';
-                    select.parentNode.insertBefore(container, select);
+                    replaceSelect(select);
                 });
             }
 
+            // 初始化：在 DOM 加载完成后执行
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', replaceSelects);
             } else {
                 replaceSelects();
             }
-            var observer = new MutationObserver(function() { replaceSelects(); });
+
+            // 监听动态添加的节点，对新出现的 select 进行替换
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    mutation.addedNodes.forEach(function(node) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.matches && node.matches('select')) {
+                                replaceSelect(node);
+                            } else if (node.querySelectorAll) {
+                                node.querySelectorAll('select').forEach(function(select) {
+                                    replaceSelect(select);
+                                });
+                            }
+                        }
+                    });
+                });
+            });
             observer.observe(document.body, { childList: true, subtree: true });
+
+            // 页面完全加载后再次尝试，确保所有元素都被处理（尤其是懒加载的）
+            if (document.readyState !== 'complete') {
+                window.addEventListener('load', function() {
+                    replaceSelects();
+                });
+            } else {
+                replaceSelects();
+            }
         })();
         </script>
     """.trimIndent()
 
         val fullInjection = "$globalStyle$polyfillScript"
-
         return if (html.contains("</body>", ignoreCase = true)) {
             html.replace("</body>", "$fullInjection</body>", ignoreCase = true)
         } else {
