@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Ruffle SWF Player</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: sans-serif;
+        }
+        #container {
+            width: 100%;
+            height: 100%;
+        }
+        .error-panel {
+            color: #ff6666;
+            text-align: center;
+            display: none;
+            padding: 20px;
+            background: rgba(0,0,0,0.8);
+            border-radius: 8px;
+            max-width: 90%;
+            margin: auto;
+        }
+        .error-panel p {
+            margin-bottom: 12px;
+        }
+        .error-panel input {
+            padding: 8px 12px;
+            width: 80%;
+            max-width: 300px;
+            border: 1px solid #666;
+            background: #222;
+            color: white;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .error-panel button {
+            padding: 8px 16px;
+            margin-left: 8px;
+            background: #3a6ea5;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .error-panel button:hover {
+            background: #2c4e7a;
+        }
+        .error-panel .hint {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 10px;
+        }
+    </style>
+    <script>
+        function getQueryParam(name) {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get(name);
+        }
+
+        function waitForRuffle(callback) {
+            if (window.RufflePlayer && typeof window.RufflePlayer.newest === 'function') {
+                callback();
+            } else {
+                setTimeout(() => waitForRuffle(callback), 200);
+            }
+        }
+
+        function loadSwf(relativePath) {
+            // 去除开头的斜杠
+            if (relativePath.startsWith('/')) {
+                relativePath = relativePath.substring(1);
+            }
+            const fullUrl = "http://localhost:8080/" + relativePath;
+            const container = document.getElementById('container');
+            container.innerHTML = '';
+            const ruffle = window.RufflePlayer.newest();
+            if (!ruffle) {
+                showError('Ruffle 未就绪', true);
+                return;
+            }
+            const player = ruffle.createPlayer();
+            player.style.width = '100%';
+            player.style.height = '100%';
+            container.appendChild(player);
+            player.load({ url: fullUrl }).catch(e => {
+                showError('播放失败: ' + e.message, true);
+            });
+        }
+
+        function showError(msg, showInput = false) {
+            document.getElementById('container').style.display = 'none';
+            const errorDiv = document.querySelector('.error-panel');
+            const errorMsgSpan = document.getElementById('errorMsg');
+            errorMsgSpan.textContent = msg;
+
+            const inputGroup = document.getElementById('manualInputGroup');
+            if (showInput) {
+                inputGroup.style.display = 'block';
+            } else {
+                inputGroup.style.display = 'none';
+            }
+            errorDiv.style.display = 'block';
+        }
+
+        function onManualLoad() {
+            const input = document.getElementById('swfPathInput');
+            let path = input.value.trim();
+            if (!path) {
+                alert('请输入相对路径，例如: subdir/example.swf');
+                return;
+            }
+            // 隐藏错误面板，开始加载
+            document.querySelector('.error-panel').style.display = 'none';
+            document.getElementById('container').style.display = '';
+            waitForRuffle(() => loadSwf(path));
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            let relativePath = getQueryParam('url');
+            if (!relativePath) {
+                // 没有提供路径，显示输入界面
+                showError('未提供 SWF 文件地址', true);
+                return;
+            }
+            // 去除可能的斜杠
+            if (relativePath.startsWith('/')) {
+                relativePath = relativePath.substring(1);
+            }
+            waitForRuffle(() => loadSwf(relativePath));
+        });
+    </script>
+</head>
+<body>
+<div id="container"></div>
+<div class="error-panel">
+    <p id="errorMsg">加载失败</p>
+    <div id="manualInputGroup" style="display: none;">
+        <input type="text" id="swfPathInput" placeholder="例如: dir/1.swf 或 1.swf" autocomplete="off">
+        <button onclick="onManualLoad()">播放</button>
+        <div class="hint">提示：输入相对于服务器根目录的路径（不需加 http://localhost:8080/）</div>
+    </div>
+</div>
+</body>
+</html>

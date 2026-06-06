@@ -253,6 +253,7 @@ class LocalWebServer(
             fileName.endsWith(".webp") -> "image/webp"
             fileName.endsWith(".svg") -> "image/svg+xml"
             fileName.endsWith(".json") -> "application/json"
+            fileName.endsWith(".swf") -> "application/x-shockwave-flash"
             else -> "text/plain"
         }
     }

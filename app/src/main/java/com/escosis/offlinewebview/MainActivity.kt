@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.ColorDrawable
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -117,8 +118,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var isAutoHideEnabled = false
     private lateinit var orientationPrefs: SharedPreferences
     private var isOrientationAllowed = true
+    private var isInputMethodVisible = false   // 软键盘是否可见
+    private var isFileBrowserVisible = false
 
-    // ==================== 横屏自动隐藏动画 ====================
+    // ==================== 自动隐藏动画 ====================
     private var isBarVisible = true
     private val hideHandler = Handler(Looper.getMainLooper())
     private lateinit var hideRunnable: Runnable
@@ -158,6 +161,10 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     // ==================== 选择模式偏好 ====================
     private lateinit var selectModePrefs: SharedPreferences
 
+    // ==================== Ruffle ====================
+    private var ruffleExtension: WebExtension? = null
+    private val SWF_PLAYER_URL = "resource://android/assets/swf_player.html"
+
     // ==================== 文件类型处理策略接口 ====================
     interface FileOpenStrategy {
         fun open(file: File, relativePath: String)
@@ -166,6 +173,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     inner class HtmlFileOpenStrategy : FileOpenStrategy {
         override fun open(file: File, relativePath: String) {
             loadUrl("http://localhost:8080/$relativePath")
+            currentFileBrowserDialog?.dismiss()
+        }
+    }
+
+    inner class SwfFileOpenStrategy : FileOpenStrategy {
+        override fun open(file: File, relativePath: String) {
+            openSwfFile(file)
             currentFileBrowserDialog?.dismiss()
         }
     }
@@ -328,6 +342,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateDeleteAndSaveButtonsState()
         setupDebugPanel()
         setupMenuButton()
+        setupSoftKeyboardListener()
 
         // 横竖屏布局调整
         rootFrame.post {
@@ -443,6 +458,20 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 setStatusBarColor(Color.parseColor("#F5F5F5"))
             }
         }
+
+        if (currentFileBrowserDialog != null && currentFileBrowserDialog?.isShowing == true) {
+            updateFileBrowserDimensions()
+        }
+    }
+
+    private fun updateFileBrowserDimensions() {
+        val dialog = currentFileBrowserDialog ?: return
+        if (!dialog.isShowing) return
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        val dialogWidth = (screenWidth * 0.9).toInt()
+        val dialogHeight = (screenHeight * 0.8).toInt()
+        dialog.window?.setLayout(dialogWidth, dialogHeight)
     }
 
     // ==================== 初始化方法 ====================
@@ -479,11 +508,18 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     private fun setupGeckoView() {
         geckoView = findViewById(R.id.geckoview)
-        geckoRuntime = GeckoRuntime.create(this)
+
+        val runtimeSettings = GeckoRuntimeSettings.Builder()
+            .build()
+        geckoRuntime = GeckoRuntime.create(this, runtimeSettings)
+
         val tempSession = GeckoSession()
         tempSession.open(geckoRuntime)
         geckoView.setSession(tempSession)
         geckoSession = tempSession
+
+        // 安装 Ruffle 扩展
+        installRuffleExtension()
 
         urlEditText.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO || event?.keyCode == KeyEvent.KEYCODE_ENTER) {
@@ -698,6 +734,30 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
+    private fun setupSoftKeyboardListener() {
+        rootFrame.viewTreeObserver.addOnGlobalLayoutListener {
+            val rect = Rect()
+            rootFrame.getWindowVisibleDisplayFrame(rect)
+            val screenHeight = rootFrame.height
+            val keypadHeight = screenHeight - rect.bottom
+            val visible = keypadHeight > screenHeight * 0.15   // 阈值判断
+            if (visible != isInputMethodVisible) {
+                isInputMethodVisible = visible
+                if (visible) {
+                    // 软键盘弹出：取消自动隐藏定时任务
+                    hideHandler.removeCallbacks(hideRunnable)
+                    log("软键盘弹出，暂停自动隐藏")
+                } else {
+                    // 软键盘收起：如果自动隐藏开启，重新启动计时
+                    if (isAutoHideEnabled) {
+                        resetHideTimer()
+                    }
+                    log("软键盘收起，恢复自动隐藏")
+                }
+            }
+        }
+    }
+
     private fun clearDataForContextId(contextId: String) {
         try {
             geckoRuntime.storageController.clearDataForSessionContext(contextId)
@@ -828,7 +888,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateNavigationButtonsState()
         urlEditText.setText("")
         urlEditText.hint = when (currentSelectMode) {
-            SelectMode.FOLDER -> "请先选择服务器根目录"
+            SelectMode.FOLDER -> "请先选择服务器根目录文件夹"
             SelectMode.ZIP -> "请先选择 ZIP 包"
         }
         log("服务器已停止，界面已重置")
@@ -857,7 +917,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/html"
+            type = "*/*"
             putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootUri)
         }
         selectFileLauncher.launch(intent)
@@ -1248,6 +1308,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (isGuideActive) return
         if (!isAutoHideEnabled) return
         if (urlEditText.isFocused()) return
+        if (isInputMethodVisible) return
+        if (isFileBrowserVisible) return
+        if (isInstancesLayerVisible) return
         if (isBarVisible) {
             hideHandler.removeCallbacks(hideRunnable)
             hideHandler.postDelayed(hideRunnable, 3000)
@@ -1441,14 +1504,16 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         refreshInstanceList()
         instancesLayer.visibility = View.VISIBLE
         isInstancesLayerVisible = true
-        log("实例图层已显示")
+        hideHandler.removeCallbacks(hideRunnable)
+        log("实例图层已显示，禁用自动隐藏")
     }
 
     private fun hideInstancesLayer() {
         if (!isInstancesLayerVisible) return
         instancesLayer.visibility = View.GONE
         isInstancesLayerVisible = false
-        log("实例图层已隐藏")
+        resetHideTimer()
+        log("实例图层已隐藏，恢复自动隐藏")
     }
 
     private fun refreshInstanceList() {
@@ -1954,6 +2019,16 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             .setView(dialogView)
             .setCancelable(true)
             .create()
+        // 设置标志，禁止自动隐藏
+        isFileBrowserVisible = true
+        hideHandler.removeCallbacks(hideRunnable)
+
+        // 监听对话框关闭
+        dialog.setOnDismissListener {
+            isFileBrowserVisible = false
+            resetHideTimer()
+        }
+
         dialog.show()
 
         // 设置窗口宽高均为屏幕的80%
@@ -1982,6 +2057,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val extension = file.extension.lowercase()
         return when (extension) {
             "html", "htm" -> HtmlFileOpenStrategy()
+            "swf" -> SwfFileOpenStrategy()
             else -> null
         }
     }
@@ -2417,5 +2493,59 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             }
             android.util.Log.d("MainActivity", message)
         }
+    }
+
+    private fun installRuffleExtension() {
+        val extensionUri = "resource://android/assets/ruffle/"
+        // 请根据你的 ruffle manifest.json 中的 id 填写，通常是 "ruffle@ruffle.rs"
+        val extensionId = "{b5501fd1-7084-45c5-9aa6-567c2fcf5dc6}"
+        geckoRuntime.webExtensionController.ensureBuiltIn(extensionUri, extensionId)
+            .accept({ extension ->
+                ruffleExtension = extension
+                log("Ruffle 扩展安装成功")
+            }, { error ->
+                log("Ruffle 扩展安装失败: ${error?.message ?: "未知错误"}")
+            })
+    }
+
+    private fun openSwfFile(swfFile: File) {
+        if (!isServerStarted) {
+            Toast.makeText(this, "请先启动服务器（选择文件夹或ZIP）", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // 1. 获取 SWF 文件所在的目录
+        val swfDir = swfFile.parentFile
+        if (swfDir == null) {
+            Toast.makeText(this, "无法获取 SWF 文件所在目录", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // 2. 在 SWF 同目录下复制播放器文件（如果不存在）
+        val playerFile = File(swfDir, "swf_player.html")
+        if (!playerFile.exists()) {
+            try {
+                assets.open("swf_player.html").use { input ->
+                    playerFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                log("已复制播放器文件到 ${playerFile.absolutePath}")
+            } catch (e: Exception) {
+                log("复制播放器文件失败: ${e.message}")
+                Toast.makeText(this, "无法创建播放器文件", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
+
+        // 3. 计算 SWF 文件的相对路径（相对于服务器根目录）
+        val swfRelativePath = getRelativePathForFile(swfFile)   // 例如 "subdir/1.swf" 或 "1.swf"
+        val playerRelativePath = getRelativePathForFile(playerFile)
+
+        // 4. 构造播放器 URL，只传递相对路径（不带 http://localhost:8080/）
+        val playerUrl = "http://localhost:8080/$playerRelativePath?url=${Uri.encode(swfRelativePath)}"
+
+        // 5. 加载播放器页面
+        loadUrl(playerUrl)
     }
 }
