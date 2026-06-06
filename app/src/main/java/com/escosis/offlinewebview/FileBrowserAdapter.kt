@@ -11,9 +11,15 @@ import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 
+data class FileBrowserItem(
+    val name: String,
+    val isDirectory: Boolean,
+    val onOpen: () -> Unit
+)
+
 class FileBrowserAdapter(
-    private var items: List<File>,
-    private val onItemClick: (File) -> Unit
+    private var items: List<FileBrowserItem>,
+    private val onItemClick: (FileBrowserItem) -> Unit
 ) : RecyclerView.Adapter<FileBrowserAdapter.ViewHolder>() {
 
     var nightMode: Boolean = false
@@ -29,11 +35,11 @@ class FileBrowserAdapter(
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val file = items[position]
-        holder.nameText.text = file.name
+        val item = items[position]
+        holder.nameText.text = item.name
         holder.nameText.setTextColor(if (nightMode) Color.WHITE else Color.BLACK)
 
-        val iconRes = if (file.isDirectory) {
+        val iconRes = if (item.isDirectory) {
             R.drawable.baseline_folder_24
         } else {
             R.drawable.baseline_insert_drive_file_24
@@ -42,12 +48,12 @@ class FileBrowserAdapter(
         val iconColor = if (nightMode) Color.WHITE else Color.DKGRAY
         holder.icon.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
 
-        holder.itemView.setOnClickListener { onItemClick(file) }
+        holder.itemView.setOnClickListener { onItemClick(item) }
     }
 
     override fun getItemCount(): Int = items.size
 
-    fun updateItems(newItems: List<File>) {
+    fun updateItems(newItems: List<FileBrowserItem>) {
         items = newItems
         notifyDataSetChanged()
     }

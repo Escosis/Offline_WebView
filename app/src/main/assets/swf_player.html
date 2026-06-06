@@ -35,7 +35,7 @@
         }
         .error-panel input {
             padding: 8px 12px;
-            width: 80%;
+            width: 90%;
             max-width: 300px;
             border: 1px solid #666;
             background: #222;
@@ -45,6 +45,7 @@
         }
         .error-panel button {
             padding: 8px 16px;
+            margin-top: 8px;
             margin-left: 8px;
             background: #3a6ea5;
             color: white;
@@ -146,9 +147,9 @@
 <div class="error-panel">
     <p id="errorMsg">加载失败</p>
     <div id="manualInputGroup" style="display: none;">
-        <input type="text" id="swfPathInput" placeholder="例如: dir/1.swf 或 1.swf" autocomplete="off">
+        <input type="text" id="swfPathInput" placeholder="例如: 子目录/文件.swf 或 文件.swf" autocomplete="off">
         <button onclick="onManualLoad()">播放</button>
-        <div class="hint">提示：输入相对于服务器根目录的路径（不需加 http://localhost:8080/）</div>
+        <div class="hint">提示：输入相对于服务器根目录的路径（也可用下方工具栏的选择文件按钮重新选取）</div>
     </div>
 </div>
 </body>

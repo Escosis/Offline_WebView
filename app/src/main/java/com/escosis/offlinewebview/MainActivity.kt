@@ -120,6 +120,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var isOrientationAllowed = true
     private var isInputMethodVisible = false   // 软键盘是否可见
     private var isFileBrowserVisible = false
+    private var isSystemPickerActive = false
 
     // ==================== 自动隐藏动画 ====================
     private var isBarVisible = true
@@ -157,6 +158,9 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var currentFileBrowserDialog: AlertDialog? = null
     private var currentBrowserRoot: File? = null
     private var currentBrowserCurrentDir: File? = null
+    private var currentBrowserRootDoc: DocumentFile? = null
+    private var currentBrowserCurrentDoc: DocumentFile? = null
+    private var isDocumentFileBrowser = false   // 当前是否在浏览 DocumentFile
 
     // ==================== 选择模式偏好 ====================
     private lateinit var selectModePrefs: SharedPreferences
@@ -165,30 +169,13 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private var ruffleExtension: WebExtension? = null
     private val SWF_PLAYER_URL = "resource://android/assets/swf_player.html"
 
-    // ==================== 文件类型处理策略接口 ====================
-    interface FileOpenStrategy {
-        fun open(file: File, relativePath: String)
-    }
-
-    inner class HtmlFileOpenStrategy : FileOpenStrategy {
-        override fun open(file: File, relativePath: String) {
-            loadUrl("http://localhost:8080/$relativePath")
-            currentFileBrowserDialog?.dismiss()
-        }
-    }
-
-    inner class SwfFileOpenStrategy : FileOpenStrategy {
-        override fun open(file: File, relativePath: String) {
-            openSwfFile(file)
-            currentFileBrowserDialog?.dismiss()
-        }
-    }
-
     // ==================== 活动结果启动器 ====================
     // 文件夹选择器（FOLDER 模式）
     private val selectFolderLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isSystemPickerActive = false
+        resetHideTimer()
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data
             if (uri != null) {
@@ -200,7 +187,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                 rootUri = uri
                 isCurrentInstanceSaved = false
                 startServer()
-                Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
             } else {
                 log("未选择文件夹")
                 Toast.makeText(this, "未选择文件夹", Toast.LENGTH_SHORT).show()
@@ -210,36 +196,12 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
     }
 
-    // 文件选择器（FOLDER 模式下选择文件）
-    private val selectFileLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val fileUri = result.data?.data
-            if (fileUri != null && rootUri != null) {
-                log("已选择文件: $fileUri")
-                if (isFileUnderRoot(fileUri, rootUri!!)) {
-                    val relativePath = getRelativePath(fileUri, rootUri!!) ?: ""
-                    val url = "http://localhost:8080/$relativePath"
-                    log("加载文件: $url")
-                    loadUrl(url)
-                } else {
-                    log("文件不在授权文件夹内: $fileUri")
-                    Toast.makeText(this, "文件不在授权文件夹内", Toast.LENGTH_LONG).show()
-                }
-            } else {
-                log("未选择文件")
-                Toast.makeText(this, "未选择文件", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            log("选择文件取消或失败")
-        }
-    }
-
     // ZIP 包选择器
     private val zipPickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isSystemPickerActive = false
+        resetHideTimer()
         if (result.resultCode == Activity.RESULT_OK) {
             val zipUri = result.data?.data ?: return@registerForActivityResult
             log("已选择 ZIP: $zipUri")
@@ -253,6 +215,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
     private val reauthorizeFolderLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isSystemPickerActive = false
+        resetHideTimer()
         if (result.resultCode == Activity.RESULT_OK) {
             val newUri = result.data?.data
             if (newUri != null && pendingReferenceInstance != null) {
@@ -794,7 +758,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             runOnUiThread {
                 updateUIAfterDirSelected()
                 if(isCurrentInstanceSaved == false) loadUrl("http://localhost:8080/")
-                Toast.makeText(this, "服务器已启动", Toast.LENGTH_SHORT).show()
             }
             hideInstancesLayer()
         } catch (e: Exception) {
@@ -888,7 +851,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         updateNavigationButtonsState()
         urlEditText.setText("")
         urlEditText.hint = when (currentSelectMode) {
-            SelectMode.FOLDER -> "请先选择服务器根目录文件夹"
+            SelectMode.FOLDER -> "请先选择服务器根目录"
             SelectMode.ZIP -> "请先选择 ZIP 包"
         }
         log("服务器已停止，界面已重置")
@@ -904,26 +867,17 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
     // ==================== 文件/文件夹选择 ====================
     private fun openFolderPicker() {
+        isSystemPickerActive = true
+        hideHandler.removeCallbacks(hideRunnable)
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             putExtra(DocumentsContract.EXTRA_INITIAL_URI, getDownloadsUri())
         }
         selectFolderLauncher.launch(intent)
     }
 
-    private fun openFilePickerInRoot() {
-        if (rootUri == null) {
-            Toast.makeText(this, "请先选择根文件夹", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootUri)
-        }
-        selectFileLauncher.launch(intent)
-    }
-
     private fun chooseZipAndExtract() {
+        isSystemPickerActive = true
+        hideHandler.removeCallbacks(hideRunnable)
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/zip"
@@ -1099,12 +1053,14 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             placeholderView.visibility = View.GONE
             hideErrorView()
             if (isZipMode) {
+                // ZIP 模式：使用内置文件浏览器浏览私有目录
                 selectFileButton.setOnClickListener {
                     showFilePickerForPrivateDir()
                 }
             } else {
+                // 文件夹模式：使用内置文件浏览器浏览 SAF 根目录
                 selectFileButton.setOnClickListener {
-                    openFilePickerInRoot()
+                    showFileBrowserForSAF()
                 }
             }
         } else {
@@ -1311,6 +1267,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         if (isInputMethodVisible) return
         if (isFileBrowserVisible) return
         if (isInstancesLayerVisible) return
+        if (isSystemPickerActive) return
         if (isBarVisible) {
             hideHandler.removeCallbacks(hideRunnable)
             hideHandler.postDelayed(hideRunnable, 3000)
@@ -1846,7 +1803,23 @@ class MainActivity : AppCompatActivity(), DebugLogger {
                     refreshInstanceList()
                     val url = if (instance.savedUrl.isNotEmpty()) "http://localhost:8080/${instance.savedUrl}" else "http://localhost:8080/"
                     loadUrl(url)
-                    selectFileButton.setOnClickListener { openFilePickerInRoot() }
+                    selectFileButton.setOnClickListener {
+                        if (rootUri == null) {
+                            Toast.makeText(this, "未选择文件夹", Toast.LENGTH_SHORT).show()
+                            return@setOnClickListener
+                        }
+                        // 尝试获取 DocumentFile，检查权限是否仍然有效
+                        val testDoc = DocumentFile.fromTreeUri(this, rootUri!!)
+                        if (testDoc == null || !testDoc.exists()) {
+                            // 权限已失效，提示并触发重新授权
+                            Toast.makeText(this, "文件夹权限已失效，请重新授权", Toast.LENGTH_SHORT).show()
+                            // 使用当前实例重新授权（instance 已在闭包中捕获）
+                            handleReferenceAuthFailure(instance)
+                            return@setOnClickListener
+                        }
+                        // 权限有效，打开内置文件浏览器
+                        showFileBrowser(testDoc)
+                    }
                     selectDirButton.setImageResource(R.drawable.baseline_folder_open_24)
                 } catch (e: Exception) {
                     handleReferenceAuthFailure(instance)
@@ -1892,6 +1865,8 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             .setTitle("需要重新授权")
             .setMessage("实例“${instance.name}”的原文件夹权限已失效，请重新选择该文件夹。")
             .setPositiveButton("选择文件夹") { _, _ ->
+                isSystemPickerActive = true
+                hideHandler.removeCallbacks(hideRunnable)
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                     putExtra(DocumentsContract.EXTRA_INITIAL_URI, getDownloadsUri())
                 }
@@ -1932,14 +1907,59 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         showFileBrowser(serverRoot)
     }
 
-    private fun showFileBrowser(rootDir: File) {
-        if (!rootDir.exists()) {
-            Toast.makeText(this, "目录不存在", Toast.LENGTH_SHORT).show()
+    private fun showFileBrowserForSAF() {
+        if (rootUri == null) {
+            Toast.makeText(this, "未选择文件夹", Toast.LENGTH_SHORT).show()
             return
         }
-        currentBrowserRoot = rootDir
-        currentBrowserCurrentDir = rootDir
+        val rootDoc = DocumentFile.fromTreeUri(this, rootUri!!)
+        if (rootDoc == null || !rootDoc.exists()) {
+            Toast.makeText(this, "无法访问文件夹", Toast.LENGTH_SHORT).show()
+            return
+        }
+        showFileBrowser(rootDoc)
+    }
 
+    // 原函数（保持不变，但内部调用通用版）
+    private fun showFileBrowser(rootDir: File) {
+        showFileBrowserInternal(rootDir)
+    }
+
+    // 新增函数，用于 SAF 模式
+    private fun showFileBrowser(rootDoc: DocumentFile) {
+        showFileBrowserInternal(rootDoc)
+    }
+
+    // 通用实现
+    private fun showFileBrowserInternal(root: Any) {
+        // 根据类型初始化状态
+        when (root) {
+            is File -> {
+                if (!root.exists()) {
+                    Toast.makeText(this, "目录不存在", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                currentBrowserRoot = root
+                currentBrowserCurrentDir = root
+                currentBrowserRootDoc = null
+                currentBrowserCurrentDoc = null
+                isDocumentFileBrowser = false
+            }
+            is DocumentFile -> {
+                if (!root.exists()) {
+                    Toast.makeText(this, "目录不存在", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                currentBrowserRootDoc = root
+                currentBrowserCurrentDoc = root
+                currentBrowserRoot = null
+                currentBrowserCurrentDir = null
+                isDocumentFileBrowser = true
+            }
+            else -> return
+        }
+
+        // 创建对话框视图（与原代码相同）
         val dialogView = layoutInflater.inflate(R.layout.dialog_file_browser, null)
         val recyclerView = dialogView.findViewById<RecyclerView>(R.id.fileRecyclerView)
         val pathText = dialogView.findViewById<TextView>(R.id.currentPathText)
@@ -1952,78 +1972,134 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         val textColor = if (isNightMode) Color.WHITE else Color.BLACK
         val iconColor = if (isNightMode) Color.WHITE else Color.DKGRAY
 
-        // 窗口背景直接使用 bgColor（不透明），dialogView 背景设为透明避免叠加
         dialogView.setBackgroundColor(Color.TRANSPARENT)
         titleBar.setBackgroundColor(titleBarColor)
         pathText.setTextColor(textColor)
         backButton.drawable?.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
         closeButton.drawable?.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN)
 
+        // 创建适配器（使用新的 FileBrowserAdapter）
         lateinit var adapter: FileBrowserAdapter
 
+        // 刷新文件列表的函数
         fun refreshFileList() {
-            val files = currentBrowserCurrentDir?.listFiles()
-                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name })
-                ?: emptyList()
-            adapter.updateItems(files)
+            val items = if (isDocumentFileBrowser) {
+                currentBrowserCurrentDoc?.listFiles()?.mapNotNull { doc ->
+                    val name = doc.name ?: return@mapNotNull null
+                    FileBrowserItem(
+                        name = name,
+                        isDirectory = doc.isDirectory,
+                        onOpen = {
+                            if (doc.isDirectory) {
+                                currentBrowserCurrentDoc = doc
+                                refreshFileList()
+                            } else {
+                                val relativePath = getRelativePathForDocumentFile(doc)
+                                openFileByRelativePath(relativePath)
+                            }
+                        }
+                    )
+                } ?: emptyList()
+            } else {
+                currentBrowserCurrentDir?.listFiles()?.map { file ->
+                    FileBrowserItem(
+                        name = file.name,
+                        isDirectory = file.isDirectory,
+                        onOpen = {
+                            if (file.isDirectory) {
+                                currentBrowserCurrentDir = file
+                                refreshFileList()
+                            } else {
+                                val relativePath = getRelativePathForFile(file)
+                                openFileByRelativePath(relativePath)
+                            }
+                        }
+                    )
+                } ?: emptyList()
+            }
+            // 排序：目录在前，然后按名称排序
+            val sorted = items.sortedWith(compareBy<FileBrowserItem> { !it.isDirectory }.thenBy { it.name })
+            adapter.updateItems(sorted)
+
+            // 更新路径显示
             val displayPath = when {
-                currentBrowserCurrentDir?.absolutePath == currentBrowserRoot?.absolutePath -> "根目录"
-                else -> currentBrowserCurrentDir?.name ?: ""
+                isDocumentFileBrowser -> {
+                    if (currentBrowserCurrentDoc == currentBrowserRootDoc) "根目录"
+                    else currentBrowserCurrentDoc?.name ?: ""
+                }
+                else -> {
+                    if (currentBrowserCurrentDir?.absolutePath == currentBrowserRoot?.absolutePath) "根目录"
+                    else currentBrowserCurrentDir?.name ?: ""
+                }
             }
             pathText.text = displayPath
         }
 
-        adapter = FileBrowserAdapter(emptyList()) { file ->
-            when {
-                file.isDirectory -> {
-                    currentBrowserCurrentDir = file
-                    refreshFileList()
-                }
-                file.isFile -> {
-                    val relativePath = getRelativePathForFile(file)
-                    val strategy = getFileOpenStrategy(file)
-                    strategy?.open(file, relativePath)
-                        ?: Toast.makeText(this, "不支持的文件类型", Toast.LENGTH_SHORT).show()
-                }
-            }
+        // 初始化适配器
+        adapter = FileBrowserAdapter(emptyList()) { item ->
+            item.onOpen.invoke()
         }
         adapter.nightMode = isNightMode
 
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
 
+        // 关闭按钮
         closeButton.setOnClickListener {
             currentFileBrowserDialog?.dismiss()
         }
 
+        // 返回按钮
         backButton.setOnClickListener {
-            if (currentBrowserCurrentDir?.absolutePath != currentBrowserRoot?.absolutePath) {
-                currentBrowserCurrentDir = currentBrowserCurrentDir?.parentFile
-                refreshFileList()
+            if (isDocumentFileBrowser) {
+                if (currentBrowserCurrentDoc != currentBrowserRootDoc) {
+                    currentBrowserCurrentDoc = currentBrowserCurrentDoc?.parentFile
+                    refreshFileList()
+                } else {
+                    Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                }
             } else {
-                Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                if (currentBrowserCurrentDir?.absolutePath != currentBrowserRoot?.absolutePath) {
+                    currentBrowserCurrentDir = currentBrowserCurrentDir?.parentFile
+                    refreshFileList()
+                } else {
+                    Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
+        // 点击路径文本返回上层
         pathText.setOnClickListener {
-            if (currentBrowserCurrentDir?.absolutePath != currentBrowserRoot?.absolutePath) {
-                currentBrowserCurrentDir = currentBrowserCurrentDir?.parentFile
-                refreshFileList()
+            if (isDocumentFileBrowser) {
+                if (currentBrowserCurrentDoc != currentBrowserRootDoc) {
+                    currentBrowserCurrentDoc = currentBrowserCurrentDoc?.parentFile
+                    refreshFileList()
+                } else {
+                    Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                }
             } else {
-                Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                if (currentBrowserCurrentDir?.absolutePath != currentBrowserRoot?.absolutePath) {
+                    currentBrowserCurrentDir = currentBrowserCurrentDir?.parentFile
+                    refreshFileList()
+                } else {
+                    Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
+        // 首次刷新
         refreshFileList()
+
+        // 创建对话框
         val dialog = AlertDialog.Builder(this)
             .setView(dialogView)
             .setCancelable(true)
             .create()
-        // 设置标志，禁止自动隐藏
+
+        // 禁止自动隐藏
         isFileBrowserVisible = true
         hideHandler.removeCallbacks(hideRunnable)
 
-        // 监听对话框关闭
         dialog.setOnDismissListener {
             isFileBrowserVisible = false
             resetHideTimer()
@@ -2031,17 +2107,57 @@ class MainActivity : AppCompatActivity(), DebugLogger {
 
         dialog.show()
 
-        // 设置窗口宽高均为屏幕的80%
+        // 设置窗口大小
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
         val dialogWidth = (screenWidth * 0.9).toInt()
         val dialogHeight = (screenHeight * 0.8).toInt()
         dialog.window?.setLayout(dialogWidth, dialogHeight)
-
-        // 设置窗口背景色（不透明，与 bgColor 一致）
         dialog.window?.setBackgroundDrawable(ColorDrawable(bgColor))
 
         currentFileBrowserDialog = dialog
+    }
+
+    private fun openFileByRelativePath(relativePath: String) {
+        if (!isServerStarted) {
+            Toast.makeText(this, "服务器未启动", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val lower = relativePath.lowercase()
+        when {
+            lower.endsWith(".swf") -> {
+                openSwfByRelativePath(relativePath)
+                currentFileBrowserDialog?.dismiss()
+            }
+            lower.endsWith(".html") || lower.endsWith(".htm") -> {
+                loadUrl("http://localhost:8080/$relativePath")
+                currentFileBrowserDialog?.dismiss()
+            }
+            else -> {
+                Toast.makeText(this, "不支持的文件类型", Toast.LENGTH_SHORT).show()
+                // 不关闭对话框，用户可继续选择
+            }
+        }
+    }
+
+    private fun openSwfByRelativePath(relativePath: String) {
+        if (!isServerStarted) {
+            Toast.makeText(this, "服务器未启动", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val playerUrl = "http://localhost:8080/__ruffle_player__?url=${Uri.encode(relativePath)}"
+        loadUrl(playerUrl)
+    }
+
+    private fun getRelativePathForDocumentFile(doc: DocumentFile): String {
+        val rootDoc = currentBrowserRootDoc ?: return doc.name ?: ""
+        val segments = mutableListOf<String>()
+        var current = doc
+        while (current != rootDoc && current.parentFile != null) {
+            segments.add(0, current.name ?: "")
+            current = current.parentFile!!
+        }
+        return segments.joinToString("/")
     }
 
     private fun getRelativePathForFile(file: File): String {
@@ -2050,15 +2166,6 @@ class MainActivity : AppCompatActivity(), DebugLogger {
             file.absolutePath.substring(serverRoot.absolutePath.length + 1)
         } else {
             file.name
-        }
-    }
-
-    private fun getFileOpenStrategy(file: File): FileOpenStrategy? {
-        val extension = file.extension.lowercase()
-        return when (extension) {
-            "html", "htm" -> HtmlFileOpenStrategy()
-            "swf" -> SwfFileOpenStrategy()
-            else -> null
         }
     }
 
@@ -2539,7 +2646,7 @@ class MainActivity : AppCompatActivity(), DebugLogger {
         }
 
         // 3. 计算 SWF 文件的相对路径（相对于服务器根目录）
-        val swfRelativePath = getRelativePathForFile(swfFile)   // 例如 "subdir/1.swf" 或 "1.swf"
+        val swfRelativePath = getRelativePathForFile(swfFile)
         val playerRelativePath = getRelativePathForFile(playerFile)
 
         // 4. 构造播放器 URL，只传递相对路径（不带 http://localhost:8080/）

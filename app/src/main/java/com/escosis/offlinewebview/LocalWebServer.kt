@@ -46,8 +46,22 @@ class LocalWebServer(
         println("[LocalWebServer] $message")
     }
 
+    private fun serveSwfPlayer(): Response {
+        return try {
+            val htmlContent = context.assets.open("swf_player.html").bufferedReader().use { it.readText() }
+            newFixedLengthResponse(Response.Status.OK, "text/html", htmlContent)
+        } catch (e: Exception) {
+            log("加载播放器页面失败: ${e.message}")
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Failed to load player")
+        }
+    }
+
     override fun serve(session: IHTTPSession): Response {
         var uri = session.uri
+        // 内置 Ruffle 播放器路由
+        if (uri == "/__ruffle_player__" || uri.startsWith("/__ruffle_player__?")) {
+            return serveSwfPlayer()
+        }
         if (uri == "/") uri = "/index.html"
         val relativePath = uri.removePrefix("/")
         log("请求: $relativePath")
